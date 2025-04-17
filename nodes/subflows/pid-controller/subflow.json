@@ -1,0 +1,88 @@
+{
+    "id": "6edcdd10545e3f9b",
+    "type": "subflow",
+    "name": "pid controller",
+    "info": "Calculate the PID output based on the actual value, setpoint, and tuning parameters.\r\n\r\n### Input\r\nThis subflow needs the following 7 required topics to be set:\r\n - `pid/actual`: current value\r\n - `pid/setpoint`: expected value\r\n - `pid/coefficient/p`: P coefficient\r\n - `pid/coefficient/i`: I coefficient\r\n - `pid/coefficient/d`: D coefficient\r\n - `pid/limit/upper`: maximum output value\r\n - `pid/limit/lower`: minimum output value\r\n\r\nThis subflow can parse input messages in 3 different formats:\r\n- `msg = { topic: \"pid/actual\", payload: 0.5 }`\r\n- `msg = { \"pid/actual\": 0.5, \"pid/setpoint\": 1, ...}`\r\n- `msg = { payload: { \"pid/actual\": 0.5, \"pid/setpoint\": 1, ...} }`\r\n\r\n### Output\r\n\r\nA successful output message includes a `payload`, `metadata`, and optional `topic` values.\r\nThis necessitates that all required input parameters are present.\r\n\r\nThe `payload` key's value is the new calculated output.\r\nIn addition, a `metadata` object will be set, which includes any internal variable values, useful for debugging purposes.\r\nIf `OUTPUT_TOPIC` is defined, a `topic` key-value pair will also be set in the output message. \r\n\r\nExample output message: \r\n```\r\n{\r\n  payload: 1.5,\r\n  topic: \"pid/output\",\r\n  metadata: {\r\n    actual_value: 1,\r\n    setpoint: 2,\r\n    ...\r\n  }\r\n}\r\n```\r\n",
+    "category": "fusebox",
+    "in": [
+        {
+            "x": 80,
+            "y": 100,
+            "wires": [
+                {
+                    "id": "690df116bbcf7da8"
+                }
+            ]
+        }
+    ],
+    "out": [
+        {
+            "x": 400,
+            "y": 100,
+            "wires": [
+                {
+                    "id": "690df116bbcf7da8",
+                    "port": 0
+                }
+            ]
+        }
+    ],
+    "env": [
+        {
+            "name": "OUTPUT_TOPIC",
+            "type": "str",
+            "value": "pid/output",
+            "ui": {
+                "icon": "font-awesome/fa-comment",
+                "label": {
+                    "en-US": "Output message topic"
+                },
+                "type": "input",
+                "opts": {
+                    "types": ["str"]
+                }
+            }
+        }
+    ],
+    "meta": {},
+    "color": "#E6E0F8",
+    "icon": "font-awesome/fa-calculator",
+    "status": {
+        "x": 400,
+        "y": 160,
+        "wires": [
+            {
+                "id": "c55bb2ab65ceb58b",
+                "port": 0
+            }
+        ]
+    },
+    "flow": [
+        {
+            "id": "690df116bbcf7da8",
+            "type": "function",
+            "z": "6edcdd10545e3f9b",
+            "name": "PID controller",
+            "func": "// Variables this code can use: msg, env, context, flow, global, node\n\n// ===============\n// PID controller\n// Calculate the PID output based on the actual value, setpoint, and tuning parameters\n// Last update: 07.11.2024\n// ===============\n\n// Initialize environment variables\nconst OUTPUT_TOPIC = env.get(\"OUTPUT_TOPIC\");\n\nconst INVALID_VALUES = [\"\", null, undefined];\n\n// Define topic-to-variable mappings\nconst TOPICS = {\n    \"pid/actual\": \"actual_value\",\n    \"pid/setpoint\": \"setpoint\",\n    \"pid/coefficient/p\": \"Kp\",\n    \"pid/coefficient/i\": \"Ki\",\n    \"pid/coefficient/d\": \"Kd\",\n    \"pid/limit/upper\": \"upper_limit\",\n    \"pid/limit/lower\": \"lower_limit\",\n};\n\n// Initialize the self object to store the variables\nconst self = {};\n\n// Store the incoming message values in the context\nconst processed = processMessage(msg);\nif (processed === null) return; // Do not proceed\n\n// Retrieve the newest stored values from context\nself.actual_value = getContextVariable(\"actual_value\");\nself.setpoint = getContextVariable(\"setpoint\");\nself.Kp = getContextVariable(\"Kp\");\nself.Ki = getContextVariable(\"Ki\");\nself.Kd = getContextVariable(\"Kd\");\nself.upper_limit = getContextVariable(\"upper_limit\");\nself.lower_limit = getContextVariable(\"lower_limit\");\n\n// Retrieve the stored previous state values from context\nself.prevError = getContextVariable(\"prevError\", 0);\nself.prevProcessVariable = getContextVariable(\"prevProcessVariable\", self.actual_value);\nself.integral = getContextVariable(\"integral\", 0);\nself.prevTime = getContextVariable(\"prevTime\", Date.now() - 100); // Subtract 100ms to avoid division by zero\n\nself.currentTime = Date.now();\n\n// Check if all required values are available\nconst validated = validateRequiredValues(self);\nif (!validated) return; // Do not proceed\n\nconst output = calculate(self);\n\n// Store the values updated during function execution\nsetContextVariable(\"prevError\", self.setpoint - self.actual_value);\nsetContextVariable(\"prevProcessVariable\", self.actual_value);\nsetContextVariable(\"integral\", self.integral);\nsetContextVariable(\"prevTime\", self.currentTime);\n\n// Return the message with the output and metadata\nreturn createMsg(output, OUTPUT_TOPIC, { ...self });\n\n// Calculate the PID output\nfunction calculate(self) {\n    // Time difference in seconds\n    let dt = (self.currentTime - self.prevTime) / 1000; // Convert ms to seconds\n\n    // Proportional term\n    let P = self.Kp * (self.setpoint - self.actual_value);\n\n    // Integral term\n    self.integral += (self.setpoint - self.actual_value) * dt; // Accumulate the integral\n\n    // Derivative term based on process variable, not error\n    let D = (self.Kd * (self.actual_value - self.prevProcessVariable)) / dt;\n\n    // Compute the PID output\n    let output = P + self.Ki * self.integral + D;\n\n    // Apply output limits and handle windup prevention\n    if (output > self.upper_limit) {\n        output = self.upper_limit;\n        self.integral -= (self.setpoint - self.actual_value) * dt; // Prevent integral windup in the upward direction\n    } else if (output < self.lower_limit) {\n        output = self.lower_limit;\n        self.integral -= (self.setpoint - self.actual_value) * dt; // Prevent integral windup in the downward direction\n    }\n\n    node.status({ fill: \"green\", shape: \"dot\", text: `Output: ${output.toFixed(2)} (${formatDate()})` });\n\n    return output;\n}\n\n// ===============\n// Helper functions\n// Various functions to simplify the code\n// ===============\n\n/**\n * Check if the specified object is an object (not an array or null)\n */\nfunction isObject(obj) {\n    return obj !== null && typeof obj === \"object\" && !Array.isArray(obj);\n}\n\n/**\n * Log a debug message if the flag is enabled\n */\nfunction debug(str) {\n    const debug = getContextVariable(\"debug\", false);\n\n    if (debug) {\n        node.debug(str);\n    }\n}\n\n/**\n * Format the current date and time as DD/MM/YYYY HH:MM:SS\n */\nfunction formatDate() {\n    const now = new Date();\n\n    return now.toLocaleString(\"en-GB\", {\n        day: \"2-digit\",\n        month: \"2-digit\",\n        year: \"2-digit\",\n        hour: \"2-digit\",\n        minute: \"2-digit\",\n        second: \"2-digit\",\n        hour12: false, // Use 24-hour format\n    }); // 'en-GB' locale for DD/MM/YYYY format\n}\n\n/**\n * Retrieve the value stored in context with the specified key\n */\nfunction getContextVariable(key, defaultValue = null) {\n    return context.get(key) ?? defaultValue;\n}\n\n/**\n * Store the specified value in context with the specified key\n */\nfunction setContextVariable(key, value) {\n    if (INVALID_VALUES.includes(value)) {\n        node.status({ fill: \"red\", shape: \"dot\", text: `Invalid value for ${key} (${formatDate()})` });\n        return;\n    }\n\n    context.set(key, value);\n}\n\n/**\n * Create a message with the specified payload, topic, and metadata\n */\nfunction createMsg(payload, topic = null, metadata = null) {\n    msg.payload = payload;\n\n    delete msg.topic;\n    if (topic) msg.topic = topic;\n    if (metadata) msg.metadata = metadata;\n\n    return msg;\n}\n\n/**\n * Process the incoming message and store the value(s) in context\n * This node can parse messages in 3 different formats.\n * Return null if the message is unknown\n */\nfunction processMessage(msg) {\n    // Find the topic in the incoming message\n    const topic1 = msg.topic ? TOPICS[msg.topic] : null; // msg = { topic: \"topic-1\", payload: 0.1 }\n    const topic2 = msg ? Object.keys(msg).filter((key) => TOPICS.hasOwnProperty(key)) : []; // msg = { \"topic-1\": 0.1, \"topic-2\": 0.2, ...}\n    const topic3 = isObject(msg.payload) ? Object.keys(msg.payload).filter((key) => TOPICS.hasOwnProperty(key)) : []; // msg = { payload: { \"topic-1\": 0.1, \"topic-2\": 0.2, ...} }\n\n    // Store the value in correct context variable (based on the topic)\n    if (topic1) {\n        if (!isInvalidValue(topic1, msg.payload)) {\n            setContextVariable(topic1, msg.payload);\n        }\n    } else if (topic2.length > 0) {\n        setVariables(topic2, msg);\n    } else if (topic3.length > 0) {\n        setVariables(topic3, msg.payload);\n    } else {\n        node.status({ fill: \"grey\", shape: \"dot\", text: `Unknown topic (${formatDate()})` });\n        return null;\n    }\n\n    // Check if a value is missing or invalid\n    function isInvalidValue(topic, value) {\n        if (INVALID_VALUES.includes(value)) {\n            node.status({ fill: \"red\", shape: \"dot\", text: `Invalid value for ${topic} (${formatDate()})` });\n            return true; // Do not proceed if the value is missing\n        }\n\n        return false;\n    }\n\n    // Loop through the topics and store the values in context\n    function setVariables(topics = [], obj = {}) {\n        for (const t of topics) {\n            if (isInvalidValue(t, obj[t])) break;\n            setContextVariable(TOPICS[t], obj[t]);\n        }\n    }\n}\n\n/**\n * In case of missing or invalid values, the function returns either true or false\n */\nfunction validateRequiredValues(self = {}) {\n    const requiredValues = [self.actual_value, self.setpoint, self.Kp, self.Ki, self.Kd, self.upper_limit, self.lower_limit];\n\n    // Check if all required values are available\n    if (requiredValues.some((value) => INVALID_VALUES.includes(value))) {\n        node.status({\n            fill: \"yellow\",\n            shape: \"dot\",\n            text: `Waiting for topics: ${requiredValues.filter((value) => INVALID_VALUES.includes(value)).length} (${formatDate()})`,\n        });\n\n        return false;\n    }\n\n    return true;\n}\n",
+            "outputs": 1,
+            "timeout": 0,
+            "noerr": 0,
+            "initialize": "",
+            "finalize": "",
+            "libs": [],
+            "x": 240,
+            "y": 100,
+            "wires": [[]]
+        },
+        {
+            "id": "c55bb2ab65ceb58b",
+            "type": "status",
+            "z": "6edcdd10545e3f9b",
+            "name": "",
+            "scope": null,
+            "x": 260,
+            "y": 160,
+            "wires": [[]]
+        }
+    ]
+}

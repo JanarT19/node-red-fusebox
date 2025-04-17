@@ -1,6 +1,6 @@
 {
     "name": "@janart19/node-red-fusebox",
-    "version": "0.1.0",
+    "version": "0.1.3",
     "description": "A collection of Fusebox-specific custom nodes for Node-RED",
     "author": "Janar Takis <janar@fusebox.energy>",
     "license": "MIT",
@@ -30,7 +30,9 @@
             "fusebox-boolean-logic": "nodes/flow/other/boolean/boolean-logic.js",
             "fusebox-sql-calendar": "nodes/flow/other/calendar/sql-calendar.js",
             "fusebox-weather-data": "nodes/flow/other/weather/weather.js",
-            "fusebox-security": "nodes/flow/other/security/security.js"
+            "fusebox-pid-controller": "nodes/subflows/pid-controller/flow.js",
+            "fusebox-inverter-control": "nodes/subflows/inverter-control/flow.js",
+            "fusebox-inverter-control-dual-limits": "nodes/subflows/inverter-control-dual-limits/flow.js"
         }
     }
 }
