@@ -1,5 +1,5 @@
 {
-    "name": "node-red-fusebox",
+    "name": "@janart19/node-red-fusebox",
     "version": "0.1.0",
     "description": "A collection of Fusebox-specific custom nodes for Node-RED",
     "author": "Janar Takis <janar@fusebox.energy>",
