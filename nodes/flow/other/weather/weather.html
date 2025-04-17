@@ -1,0 +1,83 @@
+<!-- register weather-data node -->
+<script type="text/javascript">
+    RED.nodes.registerType("fusebox-weather-data", {
+        category: 'fusebox',
+        color: '#a6bbcf',
+        // Define the default values for the node configuration
+        defaults: {
+            name: { value: "" },
+            location: { value: "" }
+        },
+        credentials: {
+            weatherstack_key: { type: "password" }
+        },
+        // Define the inputs and outputs of the node
+        inputs: 1,
+        outputs: 1,
+        icon: "font-awesome/fa-cloud",
+        label: function () {
+            return this.name || "weather data";
+        },
+        paletteLabel: function () {
+            return "weather data";
+        },
+        // Load the saved values into the UI
+        oneditprepare: function () {
+            const node = this;
+
+            $('#node-input-name').val(node.name);
+            $('#node-input-location').val(node.location);
+            $('#node-input-weatherstack_key').prop('checked', node.weatherstack_key);
+        },
+        // Save the values from the UI to the node configuration
+        oneditsave: function () {
+            const node = this;
+
+            node.name = $('#node-input-name').val();
+            node.location = $('#node-input-location').val();
+            node.weatherstack_key = $('#node-input-weatherstack_key').val();
+        }
+    });
+</script>
+
+<!-- Define setting UI for weather-data node -->
+<script type="text/html" data-template-name="fusebox-weather-data">
+    <div class="form-row">
+        <label><i class="fa fa-tag"></i><span> Name</span></label>
+        <input type="text" id="node-input-name" placeholder="Name">
+    </div>
+    <div class="form-row">
+        <label><i class="fa fa-map-marker"></i><span> Location</span></label>
+        <input type="text" id="node-input-location" placeholder="Tallinn, Estonia">
+    </div>
+    <div class="form-row">
+        <label for="node-input-weatherstack_key"><i class="fa fa-thermometer-three-quarters"></i><span> Weatherstack</span></label>
+        <input type="password" id="node-input-weatherstack_key" placeholder="Enter weather access API key">
+    </div>
+</script>
+
+<!-- Define help text of the node in the English language -->
+<script type="text/html" data-help-name="fusebox-weather-data">
+    <p>Give the weather information about the provided location.</p>
+
+    <h3>Inputs</h3>
+    <dl class="message-properties">
+        <dt class="optional">Name <span class="property-type">string</span></dt>
+        <dd>A user-friendly name.</dd>
+        <dt>Location <span class="property-type">string</span></dt>
+        <dd>If not set in the node configuration, this property will be set as the msg.payload provided to it.</dd>
+        <dt>weatherstack Access Key <span class="property-type">string</span></dt>
+        <dd>It can be generated from this <a href="https://weatherstack.com/">website</a></dd>
+    </dl>
+
+    <h3>Outputs</h3>
+    <dl class="message-properties">
+        <dt>payload <span class="property-type">object</span></dt>
+        <dd>The contents of the output will be an array object of different weather properties.</dd>
+    </dl>
+
+    <h3>Details</h3>
+    <p>If the given location name is not an appropriate name or location field in node configuration and msg.payload both are empty, then output msg will be an error.</p>
+    
+    <p>The output msg will contain an object of <code>place</code>, <code>weather</code>, <code>actualTemperature</code>, and <code>feelLikeTemperature</code>.</p>
+</script>

@@ -1,0 +1,36 @@
+{
+    "name": "node-red-fusebox",
+    "version": "0.1.0",
+    "description": "A collection of Fusebox-specific custom nodes for Node-RED",
+    "author": "Janar Takis <janar@fusebox.energy>",
+    "license": "MIT",
+    "keywords": [
+        "node-red",
+        "dashboard",
+        "fusebox",
+        "data stream",
+        "iot"
+    ],
+    "engines": {
+        "node": ">=16"
+    },
+    "dependencies": {
+        "node-fetch": "^3.3.2"
+    },
+    "node-red": {
+        "version": ">=4.0.0",
+        "nodes": {
+            "fusebox-controller": "nodes/flow/config/controller/controller.js",
+            "fusebox-query-data-streams": "nodes/flow/data-streams/query/query-data-streams.js",
+            "fusebox-query-external-connections": "nodes/flow/data-streams/query/query-external-connections.js",
+            "fusebox-read-static-data-streams": "nodes/flow/data-streams/read/read-static-data-streams.js",
+            "fusebox-read-dynamic-data-stream": "nodes/flow/data-streams/read/read-dynamic-data-stream.js",
+            "fusebox-write-static-data-streams": "nodes/flow/data-streams/write/write-static-data-streams.js",
+            "fusebox-write-dynamic-data-stream": "nodes/flow/data-streams/write/write-dynamic-data-stream.js",
+            "fusebox-boolean-logic": "nodes/flow/other/boolean/boolean-logic.js",
+            "fusebox-sql-calendar": "nodes/flow/other/calendar/sql-calendar.js",
+            "fusebox-weather-data": "nodes/flow/other/weather/weather.js",
+            "fusebox-security": "nodes/flow/other/security/security.js"
+        }
+    }
+}

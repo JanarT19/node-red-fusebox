@@ -1,0 +1,726 @@
+<script type="text/javascript">
+    RED.nodes.registerType("fusebox-read-static-data-streams", {
+        category: 'fusebox',
+        color: '#57db83',
+        // Define the default values for the node configuration
+        defaults: {
+            name: { value: "" },
+            controller: { value: "", type: "fusebox-controller", required: true },
+            outputMode: { value: "", validate: function (v) { return ["all", "change"].includes(v); } },
+            msgType: { value: "", validate: function (v) { return ["separate", "together", "split"].includes(v); } },
+            mappings: { value: [] }, // Store multiple mappings
+            outputs: { value: 1 } // Node output ports
+        },
+        // Define the inputs of the node
+        inputs: 1,
+        icon: 'node-red/switch.svg',
+        label: function () {
+            const mappings = this.mappings;
+
+            let defaultName = `parse data streams`;
+            if (mappings) defaultName = `parse data streams: ${mappings.length}`
+
+            return this.name || defaultName;
+        },
+        paletteLabel: function () {
+            return "parse data streams";
+        },
+        outputLabels: function (index) {
+            const mappings = this.mappings;
+            const msgType = this.msgType;
+
+            if (msgType === "split") {
+                return mappings[index].topic || `output #${index + 1}`;
+            }
+
+            return null;
+        },
+        // Update form fields
+        oneditprepare: function () {
+            const node = this;
+            let _controller = {};
+
+            // Load existing mappings or initialize an empty array
+            const mappings = node.mappings || [];
+
+            // Populate form with node values
+            $('#node-input-name').val(node.name);
+            $('#node-input-controller').val(node.controller);
+            $('#node-input-msgType').val(node.msgType);
+            $('#node-input-outputMode').val(node.outputMode);
+
+            // Load controller data
+            $("#node-input-controller").change(function () {
+                queryControllerConfig();
+            });
+
+            $("#node-input-msgType").change(function () {
+                defineOutputPorts();
+            });
+
+            $("#mappings-container, #node-input-msgType, #node-input-outputMode").change(function () {
+                updateTipText();
+            });
+
+            // Initialize the form fields
+            initializeEditableList();
+            defineOutputPorts();
+
+            // Set the number of output ports
+            function defineOutputPorts() {
+                const msgType = $('#node-input-msgType').val();
+                const mappings = $('#mappings-container').editableList('items');
+
+                let outputs;
+
+                if (msgType === 'split') {
+                    outputs = mappings.length;
+                }
+
+                node.outputs = outputs || 1;
+            }
+
+            // Query controller configuration and update UI
+            function queryControllerConfig() {
+                const nodeId = $("#node-input-controller").val();
+
+                $.getJSON(`fusebox/controllerNodeConfig?id=${nodeId}`, function (data) {
+                    _controller = data;
+
+                    $('#mappings-container').editableList('empty');
+                    $('#mappings-container').editableList('addItems', mappings);
+                    updateTipText();
+                }).fail(function () {
+                    console.error("Failed to get controller configuration!");
+
+                    $('#mappings-container').editableList('empty');
+                    $('#mappings-container').editableList('addItems', mappings);
+                    updateTipText();
+                });
+            }
+
+            // Initialize the EditableList widget
+            function initializeEditableList() {
+                $('#mappings-container').editableList({
+                    removable: true,
+                    sortable: true,
+                    header: $("<div>").append($.parseHTML(`
+                        <div style="width: 22px"></div>
+                        <div class="read-static-data-streams-list" style="text-align: center; white-space: normal; flex: 1">
+                            <div class="checkbox-container">Manual entry</div>
+                            <div class="node-input-keyNameManual">Data stream name</div>
+                            <div class="node-input-dataType">Data type</div>
+                            <div class="node-input-index">Member index</div>
+                            <div class="node-input-coefficient">Coefficient</div>
+                            <span class="node-input-arrow">&nbsp;&nbsp;</span>
+                            <div class="node-input-topic">Topic</div>
+                         </div>
+                         <div style="width: 28px"></div>
+                    `)),
+                    addItem: function (container, index, row) {
+                        addRowElements(container, row);
+
+                        const elements = getRowElements(container);
+
+                        formatRow(elements, row);
+                        updateTipText();
+                        attachRowEvents(elements);
+                        defineOutputPorts();
+                    },
+                    removeItem: function (data) {
+                        updateTipText();
+                        defineOutputPorts();
+                    }
+                });
+            }
+
+            // Append the row to the container
+            function addRowElements(container, row) {
+                const rowHtml = `
+                <div class="read-static-data-streams-list">
+                    <div class="checkbox-container">
+                        <input type="checkbox" class="node-input-manual" ${row.manual === true ? 'checked' : ''}>
+                        <div class="helper-text">Manual entry</div>
+                    </div>
+                    <select class="node-input-keyNameSelect"></select>
+                    <input type="text" class="node-input-keyNameManual" placeholder="Manual entry, e.g. ABCW" value="${row.keyNameManual || ''}">
+                    <select class="node-input-dataType">
+                        <option value="">Data type...</option>
+                        <option value="value" ${row.dataType === 'value' ? 'selected' : ''}>Value</option>
+                        <option value="status" ${row.dataType === 'status' ? 'selected' : ''}>Status</option>
+                        <option value="timestamp" ${row.dataType === 'timestamp' ? 'selected' : ''}>Timestamp</option>
+                    </select>
+                    <input type="number" class="node-input-index" placeholder="Member" value="${row.index || ''}" min="1" max="16">
+                    <input type="number" class="node-input-coefficient" placeholder="Coef." value="${row.coefficient || ''}" step="0.01">
+                    <span class="node-input-arrow">&#8594;</span>
+                    <input type="text" class="node-input-topic" placeholder="Topic" value="${row.topic || ''}">
+                </div>`;
+
+                container.append(rowHtml);
+            }
+
+            // Get references to the created elements
+            function getRowElements(container) {
+                return {
+                    manualElement: container.find('.node-input-manual'),
+                    keySelectElement: container.find('.node-input-keyNameSelect'),
+                    keyManualElement: container.find('.node-input-keyNameManual'),
+                    dataTypeElement: container.find('.node-input-dataType'),
+                    coefficientElement: container.find('.node-input-coefficient'),
+                    indexElement: container.find('.node-input-index'),
+                    topicElement: container.find('.node-input-topic')
+                };
+            }
+
+            // Format the newly created / intialized row's elements
+            function formatRow(elements, row) {
+                const services = _controller.services || {};
+                const keyNames = sortKeysByServiceNames(services);
+
+                const keySelectElement = elements.keySelectElement;
+                const selectedKey = row.keyNameSelect;
+                const index = row.index;
+
+                keySelectElement.empty();
+                keySelectElement.append($(`<option value="">Select data stream...</option>`));
+
+                // Populate the key selection dropdown with available keys
+                keyNames.forEach(key => {
+                    const serviceName = services[key]?.servicename || "???";
+                    const optionText = `${serviceName} (${key})`;
+                    const newOption = $(`<option value="${key}" ${selectedKey === key ? 'selected' : ''}>${optionText}</option>`);
+                    keySelectElement.append(newOption);
+                });
+
+                updateKeySelect(elements);
+                validateKeyName(elements);
+
+                populateIndex(elements);
+                updateIndex(elements, row);
+                validateIndex(elements);
+
+                validateDataType(elements);
+
+                updateCoefficient(elements);
+                validateCoefficient(elements);
+
+                validateTopic(elements);
+            }
+
+            // Attach events to the row elements
+            function attachRowEvents(elements = {}) {
+                elements.manualElement.on('change', function () {
+                    updateKeySelect(elements);
+                    validateKeyName(elements);
+
+                    populateIndex(elements);
+                    updateIndex(elements);
+                    validateIndex(elements);
+
+                    updateCoefficient(elements);
+                    validateCoefficient(elements);
+                });
+
+                elements.keySelectElement.on('change', function () {
+                    validateKeyName(elements);
+
+                    populateIndex(elements);
+                    validateIndex(elements);
+
+                    updateCoefficient(elements);
+                    validateCoefficient(elements);
+                });
+
+                elements.keyManualElement.on('change', function () {
+                    populateIndex(elements);
+                    validateIndex(elements);
+                });
+
+                elements.keyManualElement.on('input', function () {
+                    validateKeyName(elements);
+
+                    updateCoefficient(elements);
+                    validateCoefficient(elements);
+                });
+
+                elements.dataTypeElement.on('change', function () {
+                    populateIndex(elements);
+                    updateIndex(elements);
+                    validateIndex(elements);
+
+                    validateDataType(elements);
+
+                    updateCoefficient(elements);
+                    validateCoefficient(elements);
+                });
+
+                elements.indexElement.on('input', function () {
+                    validateIndex(elements);
+                });
+
+                elements.coefficientElement.on('input', function () {
+                    validateCoefficient(elements);
+                });
+
+                elements.topicElement.on('input', function () {
+                    validateTopic(elements);
+                });
+            }
+
+            // Hide the service key selection dropdown if manual is checked
+            function updateKeySelect(elements) {
+                const manual = elements.manualElement.is(':checked');
+
+                if (manual) {
+                    elements.keySelectElement.val("");
+
+                    elements.keySelectElement.hide();
+                    elements.keyManualElement.show();
+                } else {
+                    elements.keyManualElement.val("");
+
+                    elements.keySelectElement.show();
+                    elements.keyManualElement.hide();
+                }
+            }
+
+            // Hide the index field if the type is not 'value'
+            function updateIndex(elements, row = {}) {
+                const dataType = elements.dataTypeElement.val();
+                const prevIndex = row.index || "";
+
+                if (dataType === "value") {
+                    elements.indexElement.prop('disabled', false);
+                    elements.indexElement.val(prevIndex);
+                } else {
+                    elements.indexElement.prop('disabled', true);
+                    elements.indexElement.val(''); // Clear the index if it's not a value type
+                }
+            }
+
+            // Update coefficient field based on the selected key
+            function updateCoefficient(elements) {
+                const dataType = elements.dataTypeElement.val();
+                const keyNameSelect = elements.keySelectElement.val();
+                const keyNameManual = elements.keyManualElement.val();
+
+                const services = _controller.services || {};
+                const keyName = keyNameSelect || keyNameManual;
+
+                if (keyName && services[keyName]) {
+                    const convCoef = services[keyName]?.conv_coef || 1;
+                    elements.coefficientElement.val(convCoef);
+                    elements.coefficientElement.prop('disabled', true);
+                } else {
+                    elements.coefficientElement.val("1");
+                    elements.coefficientElement.prop('disabled', false);
+                }
+
+                if (dataType !== "value") {
+                    elements.coefficientElement.val("");
+                    elements.coefficientElement.prop('disabled', true);
+                }
+            }
+
+            // Update the index element based on the selected key
+            function populateIndex(elements) {
+                const dataType = elements.dataTypeElement.val();
+                const keyNameSelect = elements.keySelectElement.val();
+
+                if (dataType !== "value") return;
+
+                let el = elements.indexElement;
+                const prevIndex = el.val();
+
+                const id = Math.random().toString(36).substr(2, 9);
+                const members = _controller?.channels?.[keyNameSelect];
+
+                if (keyNameSelect && members) {
+                    const options = Object.values(members).map(member => {
+                        const idx = member.member;
+                        const desc = findValueBySvcNameAndMember(_controller.channels, keyNameSelect, idx, "desc");
+
+                        return `<option value="${idx}" ${prevIndex == idx ? "selected" : ""}>${idx} ${desc ? `(${desc})` : ``}</option>`
+                    })
+
+                    el.replaceWith(`<select data-id="${id}" class="node-input-index">${options.join('')}</select>`);
+                } else {
+                    el.replaceWith(`<input data-id="${id}" type="number" class="node-input-index" placeholder="Member" value="${el.val()}" min="1" max="16">`);
+                }
+
+                el = elements.indexElement = $(`.node-input-index[data-id="${id}"]`); // Update the reference using the custom attribute
+
+                // Reattach the event listener to the new element
+                el.on('change', function () {
+                    updateTipText();
+                });
+
+                el.on('input', function () {
+                    validateIndex(elements);
+                });
+            }
+
+            // Update tip text based on current settings
+            function updateTipText() {
+                const rows = getListElements();
+
+                const topics = rows.map(row => row.topicElement.val());
+
+                const topic1 = topics && topics.length > 0 ? topics[0] : "topic1";
+                const topic2 = topics && topics.length > 1 ? topics[1] : "topic2";
+
+                const msgType = $('#node-input-msgType').val();
+
+                const tipText1 = `Routing ${rows.length} values from controller (${_controller.uniqueId || "???"})'s data streams.`;
+                const tipText2 = `The payload will be divided by the coefficient (if applicable).`;
+                const tipText3 = `Outgoing message format: ${msgType === "together" ? `{"${topic1}": payload1, "${topic2}": payload2, ...}` : `{"topic": topic, "payload": value}`}`;
+
+                $("#node-input-tip-text-1").text(tipText1);
+                $("#node-input-tip-text-2").text(tipText2);
+                $("#node-input-tip-text-3").text(tipText3);
+            }
+
+            // Custom validation functions below
+            function validateKeyName(elements) {
+                const keyNameSelect = elements.keySelectElement.val();
+                const keyNameManual = elements.keyManualElement.val();
+
+                const invalidValues = ["", undefined, null];
+
+                let valid;
+
+                if (invalidValues.includes(keyNameSelect) && invalidValues.includes(keyNameManual)) {
+                    valid = false
+                } else {
+                    valid = true
+                }
+
+                elements.keySelectElement.css('border-color', valid ? '' : 'red');
+                elements.keyManualElement.css('border-color', valid ? '' : 'red');
+            }
+
+            function validateIndex(elements) {
+                const index = elements.indexElement.val();
+                const dataType = elements.dataTypeElement.val();
+
+                let valid;
+                valid = dataType !== "value" || isValidIndex(index);
+
+                elements.indexElement.css('border-color', valid ? '' : 'red');
+            }
+
+            function validateCoefficient(elements) {
+                const coefficient = elements.coefficientElement.val();
+                const dataType = elements.dataTypeElement.val();
+
+                let valid;
+                valid = dataType !== "value" || isValidFloat(coefficient);
+
+                elements.coefficientElement.css('border-color', valid ? '' : 'red');
+            }
+
+            function validateDataType(elements) {
+                const dataType = elements.dataTypeElement.val();
+
+                let valid;
+                valid = isValidDataType(dataType);
+
+                elements.dataTypeElement.css('border-color', valid ? '' : 'red');
+            }
+
+            function validateTopic(elements) {
+                const topic = elements.topicElement.val();
+
+                const invalidValues = ["", undefined, null];
+
+                let valid;
+                valid = !invalidValues.includes(topic);
+
+                elements.topicElement.css('border-color', valid ? '' : 'red');
+            }
+
+            function isValidIndex(index) {
+                const indexInt = parseInt(index);
+                return Number.isInteger(indexInt) && indexInt >= 1 && indexInt <= 16;
+            }
+
+            function isValidFloat(value) {
+                return !isNaN(parseFloat(value));
+            }
+
+            function isValidDataType(type) {
+                return ["value", "status", "timestamp"].includes(type);
+            }
+
+            // Data stream helper functions below
+
+            // Sort alphabetically, all keys starting with "_" are to be in the end
+            function sortKeysByServiceNames(obj) {
+                const keyNames = Object.keys(obj);
+                const normalKeys = keyNames.filter(key => !obj[key]?.servicename.startsWith('_'));
+                const underscoreKeys = keyNames.filter(key => obj[key]?.servicename.startsWith('_'));
+
+                // Sort both arrays in ascending alphabetical order based on servicename
+                normalKeys.sort((a, b) => obj[a]?.servicename?.localeCompare(obj[b]?.servicename));
+                underscoreKeys.sort((a, b) => obj[a]?.servicename?.localeCompare(obj[b]?.servicename));
+
+                return normalKeys.concat(underscoreKeys);
+            }
+
+            function findValueBySvcNameAndMember(channels = {}, name, member, key) {
+                return channels?.[name]?.[member]?.[key] ?? null;
+            }
+
+            function findIndexesBySvcName(channels = {}, name) {
+                return Object.keys(channels?.[name]) ?? [];
+            }
+
+            // Iterate over each mapping row and store the elements
+            function getListElements() {
+                const result = [];
+
+                $('#mappings-container').editableList('items').each(function () {
+                    const container = $(this);
+                    const elements = getRowElements(container);
+
+                    result.push(elements);
+                });
+
+                return result;
+            }
+        },
+        oneditsave: function () {
+            const node = this;
+
+            node.name = $('#node-input-name').val();
+            node.controller = $("#node-input-controller").val();
+            node.outputMode = $('#node-input-outputMode').val();
+            node.msgType = $('#node-input-msgType').val();
+            node.mappings = getMappings();
+
+            // Iterate over each mapping row and store the values
+            function getMappings() {
+                const mappings = [];
+
+                $('#mappings-container').editableList('items').each(function () {
+                    const container = $(this);
+
+                    const manual = container.find('.node-input-manual').is(':checked');
+                    const keyNameSelect = container.find('.node-input-keyNameSelect').val();
+                    const keyNameManual = container.find('.node-input-keyNameManual').val();
+                    const dataType = container.find('.node-input-dataType').val();
+                    const index = parseInt(container.find('.node-input-index').val());
+                    const coefficient = parseFloat(container.find('.node-input-coefficient').val());
+                    const topic = container.find('.node-input-topic').val();
+
+                    mappings.push({ manual, keyNameSelect, keyNameManual, dataType, index, coefficient, topic });
+                });
+
+                return mappings;
+            }
+        }
+    });
+</script>
+
+<!-- Define style for the form fields -->
+<style type="text/css">
+    .read-static-data-streams-div .form-row {
+        margin-bottom: 10px;
+    }
+
+    .red-ui-editableList-header {
+        background-color: #80808014;
+        font-weight: bold;
+        display: flex;
+    }
+
+    .red-ui-editableList-container {
+        min-height: 50px;
+    }
+
+    .read-static-data-streams-div .form-row label {
+        width: 33% !important;
+        vertical-align: middle;
+    }
+
+    .read-static-data-streams-div .form-row div,
+    .read-static-data-streams-div .form-row input,
+    .read-static-data-streams-div .form-row select {
+        max-width: 66% !important;
+    }
+
+    .read-static-data-streams-div .form-row select {
+        width: 66% !important;
+    }
+
+    .read-static-data-streams-div .form-tips {
+        max-width: 100% !important;
+        text-align: center;
+    }
+
+    /* Editable list style */
+    .read-static-data-streams-div .red-ui-editableList {
+        margin-bottom: 10px;
+        min-width: 650px;
+    }
+
+    .read-static-data-streams-list {
+        overflow: hidden;
+        white-space: nowrap;
+        display: flex;
+        align-items: center;
+    }
+
+    .read-static-data-streams-list .checkbox-container {
+        text-align: center;
+        min-width: 35px;
+        width: 10%;
+    }
+
+    .read-static-data-streams-list .helper-text {
+        font-size: 10px;
+        line-height: 12px;
+        text-wrap: wrap;
+        color: #666;
+    }
+
+    .read-static-data-streams-list .node-input-manual {
+        min-width: 16px;
+        min-height: 16px;
+    }
+
+    .read-static-data-streams-list .node-input-keyNameManual {
+        font-size: 12px !important;
+        min-width: 180px;
+        width: 40%;
+    }
+
+    .read-static-data-streams-list .node-input-keyNameSelect {
+        font-size: 12px;
+        min-width: 180px;
+        width: 40%;
+    }
+
+    .read-static-data-streams-list .node-input-dataType {
+        font-size: 12px;
+        min-width: 100px;
+        width: 15%;
+    }
+
+    .read-static-data-streams-list .node-input-index {
+        font-size: 12px !important;
+        min-width: 75px;
+        width: 10%;
+    }
+
+    .read-static-data-streams-list .node-input-coefficient {
+        font-size: 12px !important;
+        min-width: 65px;
+        width: 10%;
+    }
+
+    .read-static-data-streams-list .node-input-arrow {
+        font-size: 18px;
+        margin-left: 10px;
+        margin-right: 5px;
+    }
+
+    .read-static-data-streams-list .node-input-topic {
+        font-size: 12px !important;
+        min-width: 100px;
+        width: 15%;
+    }
+</style>
+
+<!-- Form fields for the Data Stream Router node -->
+<script type="text/html" data-template-name="fusebox-read-static-data-streams">
+    <div class="read-static-data-streams-div">
+        <div class="form-row">
+            <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+            <input type="text" id="node-input-name" placeholder="Name">
+        </div>
+        <div class="form-row">
+            <label for="node-input-controller"><i class="fa fa-search"></i> Controller</label>
+            <select id="node-input-controller">
+                <option value="" disabled selected>Select controller...</option>
+            </select>
+        </div>
+        <div class="form-row">
+            <label for="node-input-outputMode"><i class="fa fa-sign-out"></i> Output mode</label>
+            <select id="node-input-outputMode">
+                <option value="" disabled selected>Select output mode...</option>
+                <option value="all">Output data every time</option>
+                <option value="change">Output data on change</option>
+            </select>
+        </div>
+        <div class="form-row">
+            <label for="node-input-msgType"><i class="fa fa-sign-out"></i> Message type</label>
+            <select id="node-input-msgType">
+                <option value="" disabled selected>Select message type...</option>
+                <option value="separate">Separate 'msg' objects (one output port)</option>
+                <option value="split">Separate 'msg' objects (multiple output ports)</option>
+                <option value="together">One comprehensive 'msg' object</option>
+            </select>
+        </div>
+
+        <ol id="mappings-container"></ol>
+
+        <div class="form-tips" id="node-input-tip-text-1"></div>
+        <div class="form-tips" id="node-input-tip-text-2"></div>
+        <div class="form-tips" id="node-input-tip-text-3"></div>
+
+        <br>
+    </div>
+</script>
+
+<!-- Define node description -->
+<script type="text/html" data-help-name="fusebox-read-static-data-streams">
+    <p>
+        Output the formatted values of one or more data streams to user-specified topics.
+        Widely customizable node that can output data in various formats.
+    </p>
+    <p>Often used to route values to some flow in order to process them further.</p>
+
+    <h3>Parameters</h3>
+    <dl class="message-properties">
+        <dt class="optional">name <span class="property-type">string</span></dt>
+        <dd>User-friendly name for the node</dd>
+
+        <dt>controller <span class="property-type">controller</span></dt>
+        <dd>The source of the data streams on the local network. Localhost (127.0.0.1) for most cases.</dd>
+
+        <dt>output mode <span class="property-type">string</span></dt>
+        <dd>Specifies the conditions when data will be output. Selecting <code>change</code> will output data only when the data stream differs from the previous value.</dd>
+
+        <dt>message type <span class="property-type">string</span></dt>
+        <dd>Specifies the output format of messages. Messages can be output separately, together, or split to multiple ports.</dd>
+
+        <dt>mappings <span class="property-type">object</span></dt>
+        <dd>Each row specifies a data stream member, data type (value, status, or timestamp), and a topic to use when outputting the message. Manual data stream entries are also allowed.</dd>
+    </dl>
+
+    <h3>Output</h3>
+    <dl class="message-properties">
+        <dt>controller <span class="property-type">object</span></dt>
+        <dd>Each output <code>msg</code> includes info about the source of the data, e.g. <code>uniqueId</code>, <code>host</code>, <code>protocol</code>.</dd>
+
+        <dt>payload <span class="property-type">float</span></dt>
+        <dd>The formatted data stream value, status, or timestamp.</dd>
+
+        <dt>topic <span class="property-type">string</span></dt>
+        <dd>The topic associated with the routed data stream, used to differentiate between different values. </dd>
+    </dl>
+
+    <h3>Additional details</h3>
+    <p>This node gets its data from the controller configuration and the global context (set by the 'receive data streams' node).</p>
+    <p>In order to preserve the unit of the defined data stream, the payload is divided by the coefficient (if applicable).</p>
+
+    <p>The exact payload format depends on the message type. Example output messages:</p>
+    <p>
+        In case of <code>separate</code> message types: <code style="white-space: normal;">{"topic": string, "payload": float}</code>.
+        <br>
+        In case of <code>comprehensive</code> message type: <code style="white-space: normal;">{"payload": {"topic1": float, "topic2": float, ...}}</code>.
+    </p>
+
+    <p>Any other incoming <code>msg</code> properties will be preserved.</p>
+</script>

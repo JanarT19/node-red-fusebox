@@ -1,0 +1,323 @@
+<script type="text/javascript">
+    RED.nodes.registerType("fusebox-write-dynamic-data-stream", {
+        category: 'fusebox',
+        color: '#fab9b7',
+        // Define the default values for the node configuration
+        defaults: {
+            name: { value: "" },
+            controller: { value: "", type: "fusebox-controller", required: true },
+            outputMode: { value: "", validate: function (v) { return ["all", "change"].includes(v); } },
+
+            keyName: { value: "name", required: true },
+            keyNameType: { value: "msg" },
+
+            index: { value: "index", required: true },
+            indexType: { value: "msg" },
+
+            channelType: { value: "type", required: true },
+            channelTypeType: { value: "msg" },
+
+            payload: { value: "payload", required: true },
+            payloadType: { value: "msg" },
+
+            coefficient: { value: "coefficient" },
+            coefficientType: { value: "msg" }
+        },
+        // Define the inputs and outputs of the node
+        inputs: 1,
+        outputs: 1,
+        icon: 'font-awesome/fa-send-o',
+        label: function () {
+            return "send advanced data stream";
+        },
+        paletteLabel: function () {
+            return "send advanced data stream";
+        },
+        // Update form fields
+        oneditprepare: function () {
+            const node = this;
+            let _controller = {};
+
+            // Convert form elements to typed input
+            $("#node-input-keyName").typedInput({
+                types: ['msg', 'flow', 'global'],
+                typeField: $("#node-input-keyNameType")
+            });
+
+            $("#node-input-index").typedInput({
+                types: ['msg', 'flow', 'global'],
+                typeField: $("#node-input-indexType")
+            });
+
+            $("#node-input-channelType").typedInput({
+                types: ['msg', 'flow', 'global'],
+                typeField: $("#node-input-channelTypeType")
+            });
+
+            $("#node-input-payload").typedInput({
+                types: ['msg', 'flow', 'global'],
+                typeField: $("#node-input-payloadType")
+            });
+
+            $("#node-input-coefficient").typedInput({
+                types: ['msg', 'flow', 'global'],
+                typeField: $("#node-input-coefficientType")
+            });
+
+            // Populate form with node values
+            $('#node-input-name').val(node.name);
+            $('#node-input-controller').val(node.controller);
+            $('#node-input-outputMode').val(node.outputMode);
+
+            $('#node-input-keyName').val(node.keyName);
+            $('#node-input-keyNameType').val(node.keyNameType);
+
+            $('#node-input-index').val(node.index);
+            $('#node-input-indexType').val(node.indexType);
+
+            $('#node-input-channelType').val(node.channelType);
+            $('#node-input-channelTypeType').val(node.channelTypeType);
+
+            $('#node-input-payload').val(node.payload);
+            $('#node-input-payloadType').val(node.payloadType);
+
+            $('#node-input-coefficient').val(node.coefficient);
+            $('#node-input-coefficientType').val(node.coefficientType);
+
+            // Define event listeners for form fields
+            $("#node-input-controller").on('change', function () {
+                queryControllerConfig();
+            });
+
+            // Get the controller node configuration to populate fields and update helper text
+            function queryControllerConfig() {
+                const nodeId = $("#node-input-controller").val();
+
+                $.getJSON(`fusebox/controllerNodeConfig?id=${nodeId}`, function (data) {
+                    _controller = data;
+
+                    // Execute functions after successful query
+                    updateTipText();
+                }).fail(function () {
+                    console.error("Failed to get controller configuration!");
+                }).always(function () {
+                    updateTipText();
+                });
+            }
+
+            // Update the tip text on input change
+            function updateTipText() {
+                const uniqueId = _controller.uniqueId || "???";
+
+                const keyName = $("#node-input-keyName").val();
+                const channelType = $("#node-input-channelType").val();
+                const index = $("#node-input-index").val();
+                const payload = $("#node-input-payload").val();
+                const coefficient = $("#node-input-coefficient").val();
+
+                const tipText1 = `This node will write values to controller (${uniqueId}).`;
+                const tipText2 = `If channel type is analogue ('ai' or 'ao'), the payload will be multiplied by the coefficient before sending.`;
+                const tipText3 = `If channel type is discrete ('di' or 'do'), no coefficient will be applied.`;
+                const tipText4 = `Example input 'msg' object:
+{
+    "name": "ABCW",
+    "index": 1,
+    "type": "ai",
+    "payload": 230.1,
+    "coefficient": 100,
+}`;
+
+                $("#node-input-tip-text-1").text(tipText1);
+                $("#node-input-tip-text-2").text(tipText2);
+                $("#node-input-tip-text-3").text(tipText3);
+                $("#node-input-tip-text-4").text(tipText4);
+            }
+        },
+        oneditsave: function () {
+            const node = this;
+
+            node.name = $('#node-input-name').val();
+            node.controller = $('#node-input-controller').val();
+            node.outputMode = $('#node-input-outputMode').val();
+
+            node.keyName = $("#node-input-keyName").typedInput('value');
+            node.keyNameType = $("#node-input-keyName").typedInput('type');
+
+            node.index = $("#node-input-index").typedInput('value');
+            node.indexType = $("#node-input-index").typedInput('type');
+
+            node.channelType = $("#node-input-channelType").typedInput('value');
+            node.channelTypeType = $("#node-input-channelType").typedInput('type');
+
+            node.payload = $("#node-input-payload").typedInput('value');
+            node.payloadType = $("#node-input-payload").typedInput('type');
+
+            node.coefficient = $("#node-input-coefficient").typedInput('value');
+            node.coefficientType = $("#node-input-coefficient").typedInput('type');
+        }
+    });
+</script>
+
+<!-- Define style for the form fields -->
+<style type="text/css">
+    .write-dynamic-data-stream-div .form-row {
+        margin-bottom: 10px;
+    }
+
+    .write-dynamic-data-stream-div .form-row label {
+        width: 33% !important;
+        vertical-align: middle;
+    }
+
+    .write-dynamic-data-stream-div .form-row div,
+    .write-dynamic-data-stream-div .form-row input,
+    .write-dynamic-data-stream-div .form-row select {
+        max-width: 66% !important;
+    }
+
+    .write-dynamic-data-stream-div .form-row select,
+    .write-dynamic-data-stream-div .red-ui-typedInput-container {
+        width: 66% !important;
+    }
+
+    .write-dynamic-data-stream-div .form-tips {
+        max-width: 100% !important;
+        text-align: center;
+        white-space: pre-wrap;
+    }
+
+    .write-dynamic-data-stream-div .form-divider {
+        border-top: 1px solid #ccc;
+        margin: 5px 0;
+    }
+</style>
+
+<!-- Form fields are defined in the template below -->
+<script type="text/html" data-template-name="fusebox-write-dynamic-data-stream">
+    <div class="write-dynamic-data-stream-div">
+        <div class="form-row">
+            <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+            <input type="text" id="node-input-name" placeholder="Name">
+        </div>
+        <div class="form-row">
+            <label for="node-input-controller"><i class="fa fa-search"></i> Controller</label>
+            <select id="node-input-controller">
+                <option value="" disabled selected>Select controller...</option>
+            </select>
+        </div>
+        <div class="form-row">
+            <label for="node-input-outputMode"><i class="fa fa-sign-out"></i> Write mode</label>
+            <select id="node-input-outputMode">
+                <option value="" disabled selected>Select write mode...</option>
+                <option value="all">Write data every time</option>
+                <option value="change">Write data on change</option>
+            </select>
+        </div>
+
+        <div class="form-divider"></div>
+
+        <div class="form-row">
+            <label for="node-input-keyName"><i class="fa fa-wrench"></i> Data stream name</label>
+            <input type="text" id="node-input-keyName" placeholder="name">
+            <input type="hidden" id="node-input-keyNameType">
+        </div>
+        <div class="form-row">
+            <label for="node-input-index"><i class="fa fa-hashtag"></i> Member index</label>
+            <input type="text" id="node-input-index" placeholder="index">
+            <input type="hidden" id="node-input-indexType">
+        </div>
+        <div class="form-row">
+            <label for="node-input-channelType"><i class="fa fa-exchange"></i> Channel type</label>
+            <input type="text" id="node-input-channelType" placeholder="type">
+            <input type="hidden" id="node-input-channelTypeType">
+        </div>
+        <div class="form-row">
+            <label for="node-input-payload"><i class="fa fa-database"></i> Payload</label>
+            <input type="text" id="node-input-payload" placeholder="payload">
+            <input type="hidden" id="node-input-payloadType">
+        </div>
+        <div class="form-row">
+            <label for="node-input-coefficient"><i class="fa fa-calculator"></i> Coefficient</label>
+            <input type="text" id="node-input-coefficient" placeholder="coefficient">
+            <input type="hidden" id="node-input-coefficientType">
+        </div>
+
+        <div class="form-tips" id="node-input-tip-text-1"></div>
+        <div class="form-tips" id="node-input-tip-text-2"></div>
+        <div class="form-tips" id="node-input-tip-text-3"></div>
+        <div class="form-tips" id="node-input-tip-text-4" style="white-space: pre-wrap; text-align: left;"></div>
+    </div>
+</script>
+
+<!-- Define node description -->
+<script type="text/html" data-help-name="fusebox-write-dynamic-data-stream">
+    <p>
+        Write (save) the formatted values of a data stream back to the device.
+        Values are dynamically set by the input <code>msg</code> object.
+    </p>
+    <p>Often used at the end of some flow to route a value back to the data stream.</p>
+
+    <h3>Parameters</h3>
+    <dl class="message-properties">
+        <dt class="optional">name <span class="property-type">string</span></dt>
+        <dd>User-friendly name for the node</dd>
+
+        <dt>controller <span class="property-type">controller</span></dt>
+        <dd>The source of the data streams on the local network. Localhost (127.0.0.1) for most cases.</dd>
+
+        <dt>write mode <span class="property-type">string</span></dt>
+        <dd>Specifies the conditions when data will be saved. Selecting <code>change</code> will write data only when the data stream differs from the previous value.</dd>
+
+        <dt>data stream name <span class="property-type">string</span></dt>
+        <dd>Specifies the source of the field. The value should be a data stream key name. All fields below and including this one allow inputs from 'msg', 'flow', and 'global' types.</dd>
+
+        <dt>member index <span class="property-type">string</span></dt>
+        <dd>Specifies the source of the field. The value should be a data stream member's index you wish to write, e.g. 1. </dd>
+
+        <dt>channel type <span class="property-type">string</span></dt>
+        <dd>Specifies the source of the field. The value should be of 'ai', 'ao', 'di', or 'do' type.</dd>
+
+        <dt>payload <span class="property-type">string</span></dt>
+        <dd>Specifies the source of the field. The value should be value you wish to write to the data stream.</dd>
+
+        <dt class="optional">coefficient <span class="property-type">string</span></dt>
+        <dd>
+            Specifies the source of the field. The value should be a multiplier applied to the payload before writing to the data stream.
+            <br>
+            NB! In case of a known data stream, the correct coefficient is automatically applied.
+        </dd>
+    </dl>
+
+    <h3>Inputs</h3>
+    <p>Below is an example of the input message object.</p>
+
+    <p>
+        <code style="white-space: pre-line;">
+            {
+                "name": "ABCW",
+                "index": 1,
+                "type": "ai",
+                "payload": 230.1,
+                "coefficient": 100,
+            }
+        </code>
+    </p>
+
+    <h3>Output</h3>
+    <dl class="message-properties">
+        <dt>controller <span class="property-type">object</span></dt>
+        <dd>Each output <code>msg</code> includes info about the source of the data, e.g. <code>uniqueId</code>, <code>host</code>, <code>protocol</code>.</dd>
+
+        <dt>result <span class="property-type">boolean</span></dt>
+        <dd><code>true</code> if the data was successfully written to the device, <code>false</code> otherwise.</dd>
+
+        <dt>parameters <span class="property-type">object</span></dt>
+        <dd>Contains info about the data stream which was written to the device, e.g. <code>data stream name</code>, <code>channel type</code>, <code>final payload</code>.</dd>
+    </dl>
+
+    <h3>Additional details</h3>
+    <p>This node gets its data from the controller configuration and the global context.</p>
+    <p>In order to preserve the unit of the defined data stream, the payload is multiplied by the coefficient (if applicable).</p>
+
+    <p>Any other incoming <code>msg</code> properties will be preserved.</p>
+</script>

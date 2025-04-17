@@ -1,0 +1,927 @@
+<script type="text/javascript">
+    RED.nodes.registerType("fusebox-write-static-data-streams", {
+        category: 'fusebox',
+        color: '#f5706c',
+        defaults: {
+            name: { value: "" },
+            controller: { value: "", type: "fusebox-controller", required: true },
+            outputMode: { value: "", validate: function (v) { return ["all", "change"].includes(v); } },
+            payloadType: { value: "dynamic", validate: function (v) { return ["static", "dynamic"].includes(v); } },
+            mappings: { value: [] } // Store multiple mappings
+        },
+        inputs: 1,
+        outputs: 1,
+        icon: 'font-awesome/fa-send',
+        label: function () {
+            const mappings = this.mappings;
+
+            let defaultName = `send data streams`;
+            if (mappings) defaultName = `send data streams: ${mappings.length}`
+
+            return this.name || defaultName;
+        },
+        paletteLabel: function () {
+            return "send data streams";
+        },
+        oneditprepare: function () {
+            const node = this;
+            let _controller = {};
+
+            // Load existing mappings or initialize an empty array
+            const mappings = node.mappings || [];
+
+            // Populate form with node values
+            $('#node-input-name').val(node.name);
+            $('#node-input-controller').val(node.controller);
+            $('#node-input-outputMode').val(node.outputMode);
+            $('#node-input-payloadType').val(node.payloadType);
+
+            // Define event listeners for form fields
+            $("#node-input-controller").change(function () {
+                queryControllerConfig();
+            });
+
+            $("#mappings-container, #node-input-payloadType, #node-input-outputMode").change(function () {
+                updateTipText();
+            });
+
+            $("#node-input-payloadType").change(function () {
+                const rows = getListElements();
+
+                for (const elements of rows) {
+                    populatePayload(elements);
+                    validatePayload(elements);
+                }
+            });
+
+            // Initialize the form fields
+            initializeEditableList();
+
+            // Get the controller node configuration to populate fields and update helper text
+            function queryControllerConfig() {
+                const nodeId = $("#node-input-controller").val();
+
+                $.getJSON(`fusebox/controllerNodeConfig?id=${nodeId}`, function (data) {
+                    _controller = data;
+
+                    // Execute functions after successful query
+                    $('#mappings-container').editableList('empty');
+                    $('#mappings-container').editableList('addItems', mappings);
+
+                    updateTipText();
+                }).fail(function () {
+                    console.error("Failed to get controller configuration!");
+
+                    $('#mappings-container').editableList('empty');
+                    $('#mappings-container').editableList('addItems', mappings);
+
+                    updateTipText();
+                });
+            }
+
+            // Initialize the EditableList widget
+            function initializeEditableList() {
+                $('#mappings-container').editableList({
+                    removable: true,
+                    sortable: true,
+                    header: $("<div>").append($.parseHTML(`
+                        <div style="width: 22px"></div>
+                        <div class="write-static-data-streams-list" style="text-align: center; white-space: normal; flex: 1">
+                            <div class="node-input-topic">Topic</div>
+                            <span class="node-input-arrow"></span>
+                            <div class="checkbox-container">Manual entry</div>
+                            <div class="node-input-keyNameManual">Data stream name</div>
+                            <div class="node-input-index">Member index</div>
+                            <div class="node-input-channelType">Channel type</div>
+                            <div class="node-input-coefficient">Coefficient</div>
+                            <div class="node-input-payload">Payload</div>
+                         </div>
+                         <div style="width: 28px"></div>
+                    `)),
+                    addItem: function (container, index, row) {
+                        addRowElements(container, row);
+
+                        const elements = getRowElements(container);
+
+                        formatRow(elements, row);
+                        updateTipText();
+                        attachRowEvents(elements);
+                    },
+                    removeItem: function (data) {
+                        updateTipText();
+                    }
+                });
+            }
+
+            // Append the row to the container
+            function addRowElements(container, row) {
+                const rowHtml = `
+                <div class="write-static-data-streams-list">
+                    <input type="text" class="node-input-topic" placeholder="Topic" value="${row.topic || ''}">
+                    <span class="node-input-arrow">&#8594;</span>
+                    <div class="checkbox-container">
+                        <input type="checkbox" class="node-input-manual" ${row.manual === true ? 'checked' : ''}>
+                        <div class="helper-text">Manual entry</div>
+                    </div>
+                    <select class="node-input-keyNameSelect"></select>
+                    <input type="text" class="node-input-keyNameManual" placeholder="Manual entry, e.g. ABCW" value="${row.keyNameManual || ''}">
+                    <input type="number" class="node-input-index" placeholder="Member" value="${row.index || ''}" min="1" max="16">
+                    <select class="node-input-channelType">
+                        <option value="">Channel type...</option>
+                        <option value="ai" ${row.channelType === 'ai' ? 'selected' : ''}>Analogue input (AI)</option>
+                        <option value="ao" ${row.channelType === 'ao' ? 'selected' : ''}>Analogue output (AO)</option>
+                        <option value="di" ${row.channelType === 'di' ? 'selected' : ''}>Discrete input (DI)</option>
+                        <option value="do" ${row.channelType === 'do' ? 'selected' : ''}>Discrete output (DO)</option>
+                    </select>
+                    <input type="number" class="node-input-coefficient" placeholder="Coef." value="${row.coefficient || ''}" step="0.01">
+                    <input type="number" class="node-input-payload" placeholder="Payload" value="${row.payload || ''}" step="0.01">
+                </div>`;
+
+                container.append(rowHtml);
+            }
+
+            // Get references to the created elements
+            function getRowElements(container) {
+                return {
+                    manualElement: container.find('.node-input-manual'),
+                    keySelectElement: container.find('.node-input-keyNameSelect'),
+                    keyManualElement: container.find('.node-input-keyNameManual'),
+                    indexElement: container.find('.node-input-index'),
+                    channelTypeElement: container.find('.node-input-channelType'),
+                    coefficientElement: container.find('.node-input-coefficient'),
+                    payloadElement: container.find('.node-input-payload'),
+                    topicElement: container.find('.node-input-topic')
+                };
+            }
+
+            // Format the newly created / intialized row's elements
+            function formatRow(elements, row) {
+                const services = _controller.services || {};
+
+                const keySelectElement = elements.keySelectElement;
+                const selectedKey = row.keyNameSelect;
+
+                // Find the service keys that are writable
+                const writableKeys = findAllowedWriteSvcKeys(_controller.channels);
+                const filteredServices = Object.keys(services).reduce((acc, key) => {
+                    if (writableKeys[key]) {
+                        acc[key] = services[key];
+                    }
+
+                    return acc;
+                }, {});
+
+                const filteredSvcKeys = sortKeysByServiceNames(filteredServices);
+                const allSvcKeys = sortKeysByServiceNames(services);
+
+                clearDropdown(keySelectElement, { text: "Select data stream..." });
+
+                // Populate the key selection dropdown with available keys
+                filteredSvcKeys.forEach(key => {
+                    const serviceName = services[key]?.servicename || "???";
+
+                    const text = `${serviceName} (${key})`;
+                    const el = $(`<option value="${key}" ${selectedKey === key ? 'selected' : ''}>${text}</option>`);
+
+                    keySelectElement.append(el);
+                });
+
+                updateKeyName(elements);
+                validateKeyName(elements);
+
+                populateIndex(elements);
+                validateIndex(elements);
+
+                populateChannelType(elements);
+                validateChannelType(elements);
+
+                populatePayload(elements);
+                validatePayload(elements);
+
+                populateCoefficient(elements);
+                validateCoefficient(elements);
+
+                validateTopic(elements);
+            }
+
+            // Attach events to the row elements
+            function attachRowEvents(elements = {}) {
+                elements.manualElement.on('change', function () {
+                    updateKeyName(elements);
+                    validateKeyName(elements);
+
+                    populateIndex(elements);
+                    validateIndex(elements);
+
+                    populateCoefficient(elements);
+                    validateCoefficient(elements);
+                });
+
+                elements.keySelectElement.on('change', function () {
+                    validateKeyName(elements);
+
+                    populateIndex(elements);
+                    validateIndex(elements);
+
+                    populateChannelType(elements);
+                    validateChannelType(elements);
+
+                    populateCoefficient(elements);
+                    validateCoefficient(elements);
+                });
+
+                elements.keyManualElement.on('change', function () {
+                    populateIndex(elements);
+                    validateIndex(elements);
+                });
+
+                elements.keyManualElement.on('input', function () {
+                    validateKeyName(elements);
+
+                    populateChannelType(elements);
+                    validateChannelType(elements);
+
+                    populateCoefficient(elements);
+                    validateCoefficient(elements);
+                });
+
+                elements.channelTypeElement.on('change', function () {
+                    populateIndex(elements);
+                    validateIndex(elements);
+
+                    populatePayload(elements);
+                    validatePayload(elements);
+
+                    populateCoefficient(elements);
+                    validateCoefficient(elements);
+                });
+
+                elements.indexElement.on('input', function () {
+                    validateIndex(elements);
+                });
+
+                elements.coefficientElement.on('input', function () {
+                    validateCoefficient(elements);
+                });
+
+                elements.channelTypeElement.on('change', function () {
+                    validateChannelType(elements);
+                });
+
+                elements.topicElement.on('input', function () {
+                    validateTopic(elements);
+                });
+            }
+
+            // Hide the service key selection dropdown if manual is checked
+            function updateKeyName(elements) {
+                const manual = elements.manualElement.is(':checked');
+
+                if (manual) {
+                    elements.keySelectElement.val("");
+
+                    elements.keySelectElement.hide();
+                    elements.keyManualElement.show();
+                } else {
+                    elements.keyManualElement.val("");
+
+                    elements.keySelectElement.show();
+                    elements.keyManualElement.hide();
+                }
+            }
+
+            // Update coefficient field based on the selected key
+            function populateCoefficient(elements) {
+                const channelType = elements.channelTypeElement.val() ?? "";
+                const keyNameSelect = elements.keySelectElement.val();
+                const keyNameManual = elements.keyManualElement.val();
+
+                const services = _controller.services || {};
+                const keyName = keyNameSelect || keyNameManual;
+
+                if (keyName && services[keyName]) {
+                    const convCoef = services[keyName]?.conv_coef || 1;
+
+                    elements.coefficientElement.val(convCoef);
+                    elements.coefficientElement.prop('disabled', true);
+                } else {
+                    elements.coefficientElement.val("1");
+                    elements.coefficientElement.prop('disabled', false);
+                }
+
+                if (channelType.startsWith("d")) {
+                    elements.coefficientElement.val("");
+                    elements.coefficientElement.prop('disabled', true);
+                }
+            }
+
+            // Update the index element based on the selected key
+            function populateIndex(elements) {
+                const keyNameSelect = elements.keySelectElement.val();
+
+                let el = elements.indexElement;
+                const prevIndex = el.val();
+
+                const id = Math.random().toString(36).substr(2, 9);
+                const filteredKeys = findAllowedWriteSvcKeys(_controller.channels);
+
+                if (keyNameSelect) {
+                    const indexes = filteredKeys[keyNameSelect] || [];
+                    const options = indexes.map(index => {
+                        const desc = findValueBySvcNameAndMember(_controller.channels, keyNameSelect, index, "desc");
+
+                        return `<option value="${index}" ${prevIndex == index ? "selected" : ""}>${index} ${desc ? `(${desc})` : ``}</option>`
+                    })
+
+                    el.replaceWith(`<select data-id="${id}" class="node-input-index">${options.join('')}</select>`);
+                } else {
+                    el.replaceWith(`<input data-id="${id}" type="number" class="node-input-index" placeholder="Member" value="${prevIndex}" min="1" max="16">`);
+                }
+
+                el = elements.indexElement = $(`.node-input-index[data-id="${id}"]`); // Update the reference using the custom attribute
+
+                // Reattach the event listener to the new element
+                el.on('input', function () {
+                    validateIndex(elements);
+                });
+            }
+
+            // Populate the data stream type dropdown based on the selected key
+            // Only show the types which are compatible with the selected key and index
+            function populateChannelType(elements) {
+                const channels = _controller.channels || {};
+
+                const keyNameSelect = elements.keySelectElement.val();
+                const keyNameManual = elements.keyManualElement.val();
+                const index = parseInt(elements.indexElement.val());
+                const el = elements.channelTypeElement;
+
+                const prevType = el.val();
+
+                let options = [
+                    { value: "ai", text: "Analogue input (AI)" },
+                    { value: "ao", text: "Analogue output (AO)" },
+                    { value: "di", text: "Discrete input (DI)" },
+                    { value: "do", text: "Discrete output (DO)" }
+                ];
+
+                // If the key is selected from the dropdown, find the compatible types
+                if (!isNaN(index) && keyNameSelect && channels[keyNameSelect] && channels[keyNameSelect][index]) {
+                    const channel = channels[keyNameSelect];
+                    const member = channel[index];
+
+                    if (member.regtype === "s" || getBitWeights(member.cfg).includes(32768)) {
+                        if (member._type === "analogue") {
+                            options = [{ value: "ai", text: "Analogue input (AI)" }];
+                        } else if (member._type === "discrete") {
+                            options = [{ value: "di", text: "Discrete input (DI)" }];
+                        } else {
+                            options = [
+                                { value: "ai", text: "Analogue input (AI)" },
+                                { value: "di", text: "Discrete input (DI)" },
+                            ];
+                        }
+                    } else if (["h", "c"].includes(member.regtype) && member._output) {
+                        if (member._type === "analogue") {
+                            options = [{ value: "ao", text: "Analogue output (AO)" }];
+                        } else if (member._type === "discrete") {
+                            options = [{ value: "do", text: "Discrete output (DO)" }];
+                        } else {
+                            options = [
+                                { value: "ao", text: "Analogue output (AO)" },
+                                { value: "do", text: "Discrete output (DO)" }
+                            ];
+                        }
+                    }
+                }
+
+                const prevTypeValid = options.map(opt => opt.value).includes(prevType);
+
+                clearDropdown(el, { text: "Select data stream type...", disabled: true, selected: !prevTypeValid });
+
+                options.forEach(option => {
+                    el.append(`<option value="${option.value}" ${(prevType == option.value || options.length === 1) ? "selected" : ""}>${option.text}</option>`);
+                });
+            }
+
+            // Toggle the payload input based on channel type
+            // Discrete data streams only accept 0 or 1 as payload
+            // Analogue data streams accept any float value
+            function populatePayload(elements) {
+                const payloadType = $('#node-input-payloadType').val();
+                const channelType = elements.channelTypeElement.val() ?? "";
+
+                let el = elements.payloadElement;
+                const prevPayload = el.val();
+
+                const id = Math.random().toString(36).substr(2, 9);
+
+                if (channelType.startsWith("d") && payloadType !== "dynamic") {
+                    el.replaceWith(
+                        `<select data-id="${id}" class="node-input-payload">
+                            <option value="0" ${prevPayload == 0 ? "selected" : ""}>0</option>
+                            <option value="1" ${prevPayload == 1 ? "selected" : ""}>1</option>
+                        </select>`
+                    );
+                } else {
+                    el.replaceWith(`<input data-id="${id}" type="number" class="node-input-payload" placeholder="Payload" value="${prevPayload}" step="0.01">`);
+                }
+
+                el = elements.payloadElement = $(`.node-input-payload[data-id="${id}"]`); // Update the reference using the custom attribute
+
+                // Reattach the event listener to the new element
+                el.on('input', function () {
+                    validatePayload(elements);
+                });
+
+                if (payloadType === "dynamic") {
+                    el.val("");
+                    el.prop('disabled', true);
+                }
+            }
+
+            // Clear the data stream selection
+            function clearDropdown(element, options = {}) {
+                const { text = "none", disabled = false, selected = false } = options;
+
+                element.empty();
+                element.append($(`<option value="" ${disabled ? 'disabled' : ''} ${selected ? 'selected' : ''}>${text}</option>`));
+            }
+
+            // Update tip text based on current settings
+            function updateTipText() {
+                const rows = getListElements();
+
+                const payloadType = $('#node-input-payloadType').val();
+                const topics = rows.map(row => row.topicElement.val());
+                const payloads = rows.map(row => row.payloadElement.val());
+
+                const topic1 = topics && topics.length > 0 ? topics[0] : "topic1";
+                const topic2 = topics && topics.length > 1 ? topics[1] : "topic2";
+
+                const payload1 = payloads && payloads.length > 0 ? payloads[0] : "payload1";
+                const payload2 = payloads && payloads.length > 1 ? payloads[1] : "payload2";
+
+                const tipText1 = `Routing ${rows.length} values from controller (${_controller.uniqueId || "???"})'s data streams.`;
+                const tipText2 = `The payload will be multiplied by the coefficient (if applicable).`;
+                const tipText3 = payloadType === "dynamic" ? `The required payload(s) will be searched from the incoming 'msg' object.` : `The payload(s) defined in the form fields above will be used when writing data.`;
+                const tipText4 = `Only writable data streams and members are shown in the dropdown lists.`;
+                const tipText5 = payloadType === "dynamic" ? `Incoming message formats: 
+                1. {"topic": topic, "payload": value} to write a single stream
+                2. {"${topic1}": ${payload1}, "${topic2}": ${payload2}, ...} to write multiple streams`
+                    : `Incoming message formats:
+                1. {"topic": topic} to write a single stream
+                2. {"${topic1}": true, "${topic2}": false, ...} to write multiple streams
+                3. none, in which case every stream will be written.`;
+
+                $("#node-input-tip-text-1").text(tipText1);
+                $("#node-input-tip-text-2").text(tipText2);
+                $("#node-input-tip-text-3").text(tipText3);
+                $("#node-input-tip-text-4").text(tipText4);
+                $("#node-input-tip-text-5").text(tipText5);
+            }
+
+            // Custom validation functions below
+            function validateKeyName(elements) {
+                const keyNameSelect = elements.keySelectElement.val();
+                const keyNameManual = elements.keyManualElement.val();
+
+                const invalidValues = ["", undefined, null];
+
+                let valid;
+
+                if (invalidValues.includes(keyNameSelect) && invalidValues.includes(keyNameManual)) {
+                    valid = false
+                } else {
+                    valid = true
+                }
+
+                elements.keySelectElement.css('border-color', valid ? '' : 'red');
+                elements.keyManualElement.css('border-color', valid ? '' : 'red');
+            }
+
+            function validateIndex(elements) {
+                const index = elements.indexElement.val();
+
+                let valid;
+                valid = isValidIndex(index);
+
+                elements.indexElement.css('border-color', valid ? '' : 'red');
+            }
+
+            function validateCoefficient(elements) {
+                const coefficient = elements.coefficientElement.val();
+                const channelType = elements.channelTypeElement.val() ?? "";
+
+                let valid;
+                valid = channelType.startsWith("d") || isValidFloat(coefficient);
+
+                elements.coefficientElement.css('border-color', valid ? '' : 'red');
+            }
+
+            function validateChannelType(elements) {
+                const channelType = elements.channelTypeElement.val();
+
+                let valid;
+                valid = isValidChannelType(channelType);
+
+                elements.channelTypeElement.css('border-color', valid ? '' : 'red');
+            }
+
+            function validatePayload(elements) {
+                const payloadType = $('#node-input-payloadType').val();
+                const channelType = elements.channelTypeElement.val() ?? "";
+                const payload = elements.payloadElement.val();
+
+                let valid;
+
+                if (channelType.startsWith("d")) {
+                    valid = ["0", "1"].includes(payload);
+                } else {
+                    valid = isValidFloat(payload);
+                }
+
+                if (payloadType === "dynamic") {
+                    valid = true;
+                }
+
+                elements.payloadElement.css('border-color', valid ? '' : 'red');
+            }
+
+            function validateTopic(elements) {
+                const topic = elements.topicElement.val();
+
+                const invalidValues = ["", undefined, null];
+                let duplicateTopics = [];
+
+                const rows = getListElements();
+
+                for (const elements of rows) {
+                    const t = elements.topicElement.val();
+                    if (t === topic) duplicateTopics.push(t);
+                }
+
+                let valid;
+                valid = !invalidValues.includes(topic) && duplicateTopics.length <= 1;
+
+                elements.topicElement.css('border-color', valid ? '' : 'red');
+            }
+
+            function isValidIndex(index) {
+                const indexInt = parseInt(index);
+                return Number.isInteger(indexInt) && indexInt >= 1 && indexInt <= 16;
+            }
+
+            function isValidFloat(value) {
+                return !isNaN(parseFloat(value));
+            }
+
+            function isValidChannelType(type) {
+                return ["ai", "ao", "di", "do"].includes(type);
+            }
+
+            // Data stream helper functions below
+
+            // Sort alphabetically, all keys starting with "_" are to be in the end
+            function sortKeysByServiceNames(obj) {
+                const keyNames = Object.keys(obj);
+                const normalKeys = keyNames.filter(key => !obj[key]?.servicename.startsWith('_'));
+                const underscoreKeys = keyNames.filter(key => obj[key]?.servicename.startsWith('_'));
+
+                // Sort both arrays in ascending alphabetical order based on servicename
+                normalKeys.sort((a, b) => obj[a]?.servicename?.localeCompare(obj[b]?.servicename));
+                underscoreKeys.sort((a, b) => obj[a]?.servicename?.localeCompare(obj[b]?.servicename));
+
+                return normalKeys.concat(underscoreKeys);
+            }
+
+            // Only certain services and members are allowed to be written to.
+            // Retrieve the members and descriptions of the allowed services.
+            // Requirements:
+            // 1. all regtype "s" services
+            // 2. all chantype "mb" services with (regtype "h" or "c") and (mbi,mba,regadd existing in output table or bit includes 32768)
+            function findAllowedWriteSvcKeys(channels = {}) {
+                const result = {};
+
+                // 1
+                for (const key in channels) {
+                    const channel = channels[key];
+
+                    for (index in channel) {
+                        const member = channel[index];
+                        const indexInt = parseInt(index);
+
+                        if (member.regtype === "s") {
+                            result[key] = result[key] || [];
+
+                            if (!result[key].includes(indexInt)) {
+                                result[key].push(indexInt);
+                            }
+                        }
+                    }
+                }
+
+                // 2
+                for (const key in channels) {
+                    const channel = channels[key];
+
+                    for (index in channel) {
+                        const member = channel[index];
+                        const indexInt = parseInt(index);
+
+                        if ((member.chantype === "mb" && (["h", "c"].includes(member.regtype)) && (member._output || getBitWeights(member.cfg).includes(32768)))) {
+                            result[key] = result[key] || [];
+
+                            if (!result[key].includes(indexInt)) {
+                                result[key].push(indexInt);
+                            }
+                        }
+                    }
+                }
+
+                return result;
+            }
+
+            function findValueBySvcNameAndMember(channels = {}, name, member, key) {
+                return channels?.[name]?.[member]?.[key] ?? null;
+            }
+
+            function findIndexesBySvcName(channels = {}, name) {
+                return Object.keys(channels?.[name]) ?? [];
+            }
+
+            function getBitWeights(decimalNumber) {
+                let bitWeights = [];
+                let bitValue = 1;
+
+                while (decimalNumber > 0) {
+                    if (decimalNumber & 1) {
+                        bitWeights.push(bitValue);
+                    }
+
+                    decimalNumber >>= 1;
+                    bitValue <<= 1;
+                }
+
+                return bitWeights;
+            };
+
+            // Iterate over each mapping row and store the elements
+            function getListElements() {
+                const result = [];
+
+                $('#mappings-container').editableList('items').each(function () {
+                    const container = $(this);
+                    const elements = getRowElements(container);
+
+                    result.push(elements);
+                });
+
+                return result;
+            }
+        },
+        oneditsave: function () {
+            const node = this;
+
+            node.name = $('#node-input-name').val();
+            node.controller = $("#node-input-controller").val();
+            node.outputMode = $('#node-input-outputMode').val();
+            node.payloadType = $('#node-input-payloadType').val();
+            node.mappings = getListValues();
+
+            // Iterate over each mapping row and store the values
+            function getListValues() {
+                const mappings = [];
+
+                $('#mappings-container').editableList('items').each(function () {
+                    const container = $(this);
+
+                    const manual = container.find('.node-input-manual').is(':checked');
+                    const keyNameSelect = container.find('.node-input-keyNameSelect').val();
+                    const keyNameManual = container.find('.node-input-keyNameManual').val();
+                    const channelType = container.find('.node-input-channelType').val();
+                    const index = parseInt(container.find('.node-input-index').val());
+                    const coefficient = parseFloat(container.find('.node-input-coefficient').val());
+                    const payload = parseFloat(container.find('.node-input-payload').val());
+                    const topic = container.find('.node-input-topic').val();
+
+                    mappings.push({ manual, keyNameSelect, keyNameManual, channelType, index, coefficient, payload, topic });
+                });
+
+                return mappings;
+            }
+        }
+    });
+</script>
+
+<!-- Define style for the form fields -->
+<style type="text/css">
+    .write-static-data-streams-div .form-row {
+        margin-bottom: 10px;
+    }
+
+    .red-ui-editableList-header {
+        background-color: #80808014;
+        font-weight: bold;
+        display: flex;
+    }
+
+    .red-ui-editableList-container {
+        min-height: 50px;
+    }
+
+    .write-static-data-streams-div .form-row label {
+        width: 33% !important;
+        vertical-align: middle;
+    }
+
+    .write-static-data-streams-div .form-row div,
+    .write-static-data-streams-div .form-row input,
+    .write-static-data-streams-div .form-row select {
+        max-width: 66% !important;
+    }
+
+    .write-static-data-streams-div .form-row select {
+        width: 66% !important;
+    }
+
+    .write-static-data-streams-div .form-tips {
+        max-width: 100% !important;
+        text-align: center;
+    }
+
+    /* Editable list style */
+    .write-static-data-streams-div .red-ui-editableList {
+        margin-bottom: 10px;
+        min-width: 700px;
+    }
+
+    .write-static-data-streams-list {
+        overflow: hidden;
+        white-space: nowrap;
+        display: flex;
+        align-items: center;
+    }
+
+    .write-static-data-streams-list .checkbox-container {
+        text-align: center;
+        min-width: 35px;
+        width: 7%;
+    }
+
+    .write-static-data-streams-list .helper-text {
+        font-size: 10px;
+        line-height: 12px;
+        text-wrap: wrap;
+        color: #666;
+    }
+
+    .write-static-data-streams-list .node-input-manual {
+        min-width: 16px;
+        min-height: 16px;
+    }
+
+    .write-static-data-streams-list .node-input-keyNameManual {
+        font-size: 12px !important;
+        min-width: 150px;
+        width: 30%;
+    }
+
+    .write-static-data-streams-list .node-input-keyNameSelect {
+        font-size: 12px;
+        min-width: 150px;
+        width: 30%;
+    }
+
+    .write-static-data-streams-list .node-input-channelType {
+        font-size: 12px;
+        min-width: 100px;
+        width: 15%;
+    }
+
+    .write-static-data-streams-list .node-input-index {
+        font-size: 12px !important;
+        min-width: 85px;
+        width: 15%;
+    }
+
+    .write-static-data-streams-list .node-input-coefficient {
+        font-size: 12px !important;
+        min-width: 65px;
+        width: 7%;
+    }
+
+    .write-static-data-streams-list .node-input-payload {
+        font-size: 12px !important;
+        min-width: 75px;
+        width: 7%;
+    }
+
+    .write-static-data-streams-list .node-input-arrow {
+        font-size: 18px;
+        margin-left: 4px;
+        margin-right: 4px;
+        min-width: 20px;
+        width: 4%;
+    }
+
+    .write-static-data-streams-list .node-input-topic {
+        font-size: 12px !important;
+        min-width: 100px;
+        width: 15%;
+    }
+</style>
+
+<!-- Form fields for the Data Stream Router node -->
+<script type="text/html" data-template-name="fusebox-write-static-data-streams">
+    <div class="write-static-data-streams-div">
+        <div class="form-row">
+            <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+            <input type="text" id="node-input-name" placeholder="Name">
+        </div>
+        <div class="form-row">
+            <label for="node-input-controller"><i class="fa fa-search"></i> Controller</label>
+            <select id="node-input-controller">
+                <option value="" disabled selected>Select controller...</option>
+            </select>
+        </div>
+        <div class="form-row">
+            <label for="node-input-outputMode"><i class="fa fa-sign-out"></i> Write mode</label>
+            <select id="node-input-outputMode">
+                <option value="" disabled selected>Select write mode...</option>
+                <option value="all">Write data every time</option>
+                <option value="change">Write data on change</option>
+            </select>
+        </div>
+        <div class="form-row">
+            <label for="node-input-payloadType"><i class="fa fa-sign-out"></i> Payload type</label>
+            <select id="node-input-payloadType">
+                <option value="" disabled>Select payload type...</option>
+                <option value="static">Use form values</option>
+                <option value="dynamic" selected>Use incoming 'msg' payload</option>
+            </select>
+        </div>
+
+        <ol id="mappings-container"></ol>
+
+        <div class="form-tips" id="node-input-tip-text-1"></div>
+        <div class="form-tips" id="node-input-tip-text-2"></div>
+        <div class="form-tips" id="node-input-tip-text-3"></div>
+        <div class="form-tips" id="node-input-tip-text-4"></div>
+        <div class="form-tips" id="node-input-tip-text-5" style="white-space: pre-line;"></div>
+
+        <br>
+    </div>
+</script>
+
+<!-- Define node description -->
+<script type="text/html" data-help-name="fusebox-write-static-data-streams">
+    <p>
+        Write (save) the formatted values of one or more data streams back to the devices.
+        Widely customizable node that can format data in various formats.
+    </p>
+    <p>Often used at the end of some flow to route a value back to the data stream.</p>
+
+    <h3>Parameters</h3>
+    <dl class="message-properties">
+        <dt class="optional">name <span class="property-type">string</span></dt>
+        <dd>User-friendly name for the node</dd>
+
+        <dt>controller <span class="property-type">controller</span></dt>
+        <dd>The source of the data streams on the local network. Localhost (127.0.0.1) for most cases.</dd>
+
+        <dt>write mode <span class="property-type">string</span></dt>
+        <dd>Specifies the conditions when data will be saved. Selecting <code>change</code> will write data only when the data stream differs from the previous value.</dd>
+
+        <dt>payload type <span class="property-type">string</span></dt>
+        <dd>Specifies the source of payload values, either from the mapping fields or from the incoming <code>msg</code> object.</dd>
+
+        <dt>mappings <span class="property-type">object</span></dt>
+        <dd>Each row specifies a data stream member, channel type (analogue or discrete), and a topic to use when writing the message. Manual data stream entries are also allowed.</dd>
+    </dl>
+
+    <h3>Output</h3>
+    <dl class="message-properties">
+        <dt>controller <span class="property-type">object</span></dt>
+        <dd>Each output <code>msg</code> includes info about the source of the data, e.g. <code>uniqueId</code>, <code>host</code>, <code>protocol</code>.</dd>
+
+        <dt>result <span class="property-type">boolean</span></dt>
+        <dd><code>true</code> if the data was successfully written to the device, <code>false</code> otherwise.</dd>
+
+        <dt>parameters <span class="property-type">object</span></dt>
+        <dd>Contains info about the data stream which was written to the device, e.g. <code>data stream name</code>, <code>channel type</code>, <code>final payload</code>.</dd>
+    </dl>
+
+    <h3>Additional details</h3>
+    <p>This node gets its data from the controller configuration and the global context.</p>
+    <p>In order to preserve the unit of the defined data stream, the payload is multiplied by the coefficient (if applicable).</p>
+
+    <p>The exact payload format depends on the message type. Example incoming messages:</p>
+    <p>
+        In case of <code>separate</code> message types: <code style="white-space: normal;">{"topic": string, "payload": float}</code>.
+        <br>
+        In case of <code>comprehensive</code> message type: <code style="white-space: normal;">{"topic1": float, "topic2": float, ...}</code>.
+    </p>
+
+    <p>Any other incoming <code>msg</code> properties will be preserved.</p>
+</script>
