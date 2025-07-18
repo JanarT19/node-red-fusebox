@@ -1,6 +1,6 @@
 {
     "name": "@janart19/node-red-fusebox",
-    "version": "0.1.4",
+    "version": "0.1.5",
     "description": "A collection of Fusebox-specific custom nodes for Node-RED",
     "author": "Janar Takis <janar@fusebox.energy>",
     "license": "MIT",
@@ -8,6 +8,10 @@
         "node-red",
         "dashboard",
         "fusebox",
+        "uniflex",
+        "energy",
+        "virtual power plant",
+        "automation",
         "data stream",
         "iot"
     ],
@@ -31,6 +35,7 @@
             "fusebox-security": "nodes/flow/other/security/security.js",
             "fusebox-sql-calendar": "nodes/flow/other/calendar/sql-calendar.js",
             "fusebox-weather-data": "nodes/flow/other/weather/weather.js",
+            "fusebox-lamp-control": "nodes/flow/other/lamp/lamp-control.js",
             "fusebox-pid-controller": "nodes/subflows/pid-controller/flow.js",
             "fusebox-inverter-control": "nodes/subflows/inverter-control/flow.js",
             "fusebox-inverter-control-dual-limits": "nodes/subflows/inverter-control-dual-limits/flow.js"
