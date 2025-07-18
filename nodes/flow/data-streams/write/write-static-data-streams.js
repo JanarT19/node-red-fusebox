@@ -12,9 +12,16 @@ module.exports = function (RED) {
         node.payloadType = config.payloadType;
         node.mappings = config.mappings || [];
 
-        var previousValues = {};
-        var currentValues = [];
-        var requestInProgress = {};
+        // Stores latest output of each row to compare against
+        const previousValues = {};
+
+        // Temporary variables
+        let currentValues = [];
+        const requestInProgress = {};
+
+        // Measure latency of HTTP requests
+        const measureDelay = true;
+        let lastSendTs = null;
 
         // Retrieve the config node's settings
         node.controller = RED.nodes.getNode(config.controller);
@@ -26,11 +33,6 @@ module.exports = function (RED) {
             return;
         }
 
-        // Initialize the global context for accessing data streams
-        const globalStatesKey = `${node.controller.uniqueId}_states`;
-        const globalAllStatesKey = `${node.controller.uniqueId}_allstates`; // Fallback
-        const globalContext = node.context().global;
-
         // Validation constants
         const invalidValues = ["", null, undefined];
         const outputModeValid = ["all", "change"];
@@ -38,25 +40,13 @@ module.exports = function (RED) {
         const channelTypeValid = ["ai", "ao", "di", "do"];
         const discretePayloadValid = [0, 1];
 
+        const rows = node.mappings.length || 0;
+        const outputMode = node.outputMode;
+        const payloadType = node.payloadType;
+
         // Listen for input messages
         node.on("input", function (msg) {
-            const dataStreams = globalContext.get(globalStatesKey);
-            const fallbackDataStreams = globalContext.get(globalAllStatesKey);
-
-            const outputMode = node.outputMode;
-            const payloadType = node.payloadType;
-
-            const rows = node.mappings.length || 0;
-
-            currentValues = [];
-
             // Basic validation
-            if (!dataStreams && !fallbackDataStreams) {
-                node.error("No data streams queried");
-                node.status({ fill: "red", shape: "dot", text: `No data streams queried from: ${node.controller.uniqueId}` });
-                return;
-            }
-
             if (!outputModeValid.includes(outputMode)) {
                 node.error(`Output mode must be one of: ${outputModeValid.join(", ")}`);
                 node.status({ fill: "red", shape: "dot", text: `Invalid output mode: ${outputMode}` });
@@ -69,19 +59,26 @@ module.exports = function (RED) {
                 return;
             }
 
+            // Reset temporary variables
+            currentValues = [];
+
+            // Initialize global context to get and set values
+            const outputContextKey = `${node.controller.uniqueId}_output_states`;
+            const globalContext = node.context().global;
+
             // Due to Promises, set default status before processing the data
             node.status({
                 fill: "grey",
                 shape: "dot",
-                text: `Send 0 of ${rows} values (${formatDate()})`,
+                text: `Send 0 of ${rows} values (${formatDate()})`
             });
 
             // Iterate over each row in the mappings and process the data
             node.mappings.forEach((row, i) => {
                 const svcKey = row.keyNameSelect || row.keyNameManual;
                 const channelType = row.channelType;
-                const index = parseInt(row.index);
                 const topic = row.topic;
+                const index = parseInt(row.index);
                 let coefficient = parseFloat(row.coefficient) || 1;
                 let payload;
 
@@ -90,12 +87,6 @@ module.exports = function (RED) {
                     node.error("Data stream name required");
                     node.status({ fill: "red", shape: "dot", text: "Data stream name required" });
                     return; // Skip to the next row
-                }
-
-                if (!dataStreams?.[svcKey] && !fallbackDataStreams?.[svcKey]) {
-                    node.error(`Unknown data stream: ${svcKey}`);
-                    node.status({ fill: "red", shape: "dot", text: `Unknown data stream: ${svcKey}` });
-                    return;
                 }
 
                 if (invalidValues.includes(topic)) {
@@ -167,13 +158,17 @@ module.exports = function (RED) {
                     payload = parseInt(payload * coefficient); // Due to UniSCADA limitations, we need to send the integer value
                 }
 
-                // Check output mode and compare with previous value
-                // Do not send output if the value hasn't changed, unless the previous value was sent more than 5 seconds ago
+                // Do not send output if the value hasn't changed
+                // PS. In addition to checking the node's previous value, we also check the latest value saved to global context
                 if (outputMode === "change" && previousValues[i] !== undefined && previousValues[i].payload === payload) {
-                    const values = dataStreams?.[svcKey]?.values ?? fallbackDataStreams?.[svcKey]?.values;
-                    const latestValue = values?.[index - 1] ?? null;
+                    const outputContext = globalContext.get(outputContextKey);
+                    const outputContextValues = outputContext?.[svcKey]?.values || [];
+                    const outputContextValue = outputContextValues?.[index - 1] ?? null;
 
-                    if (!latestValue || latestValue === payload || previousValues[i].timestamp > Date.now() - 5000) {
+                    if (outputContextValue === null) return;
+
+                    if (outputContextValue !== null && outputContextValue === payload) {
+                        node.debug(`Skipping sending unchanged value for ${svcKey}.${index}`);
                         return;
                     }
                 }
@@ -189,9 +184,9 @@ module.exports = function (RED) {
                     localhost: {
                         [`${svcKey}.${index}`]: {
                             v: payload,
-                            type: channelType,
-                        },
-                    },
+                            type: channelType
+                        }
+                    }
                 };
 
                 const parameters = {
@@ -199,10 +194,11 @@ module.exports = function (RED) {
                     name: svcKey,
                     index,
                     type: channelType,
-                    payload,
+                    payload
                 };
 
                 requestInProgress[i] = true;
+                if (measureDelay) lastSendTs = Date.now();
 
                 // Send the POST request to the controller
                 sendSetupValue(node, postData, parameters)
@@ -216,11 +212,13 @@ module.exports = function (RED) {
                             node.status({
                                 fill: sentValues === 0 ? "grey" : "green",
                                 shape: "dot",
-                                text: `Send ${sentValues} of ${rows} values${sentValues > 0 ? ":" : ""} ${currentValues.join(", ")} (${formatDate()})`,
+                                text: `Send ${sentValues} of ${rows} values${sentValues > 0 ? ":" : ""} ${currentValues.join(", ")} (${formatDate()})`
                             });
                         }
 
                         requestInProgress[i] = false;
+                        if (measureDelay) node.debug(`HTTP latency: ${(Date.now() - lastSendTs) / 1000} s`);
+
                         node.send({ payload: result, parameters, controller: { id: node.controller.id, uniqueId: node.controller.uniqueId, host: node.controller.host } });
                     })
                     .catch((error) => {
@@ -242,8 +240,8 @@ module.exports = function (RED) {
                 path: "/setup",
                 method: "POST",
                 headers: {
-                    "Content-Type": "application/json",
-                },
+                    "Content-Type": "application/json"
+                }
             };
 
             node.debug(`Querying HTTP: ${JSON.stringify(options)} with body ${JSON.stringify(postData)}`);
@@ -348,7 +346,7 @@ module.exports = function (RED) {
                 hour: "2-digit",
                 minute: "2-digit",
                 second: "2-digit",
-                hour12: false, // Use 24-hour format
+                hour12: false // Use 24-hour format
             };
 
             return now.toLocaleString("en-GB", options); // 'en-GB' locale for DD/MM/YYYY format

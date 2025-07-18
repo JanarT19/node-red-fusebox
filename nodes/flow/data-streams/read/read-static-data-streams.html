@@ -39,6 +39,7 @@
         oneditprepare: function () {
             const node = this;
             let _controller = {};
+            let _lastControllerId = null;
 
             // Load existing mappings or initialize an empty array
             const mappings = node.mappings || [];
@@ -54,6 +55,7 @@
                 queryControllerConfig();
             });
 
+            // Define event listeners for form fields
             $("#node-input-msgType").change(function () {
                 defineOutputPorts();
             });
@@ -80,23 +82,27 @@
                 node.outputs = outputs || 1;
             }
 
-            // Query controller configuration and update UI
+            // Query variables related to controller configuration
             function queryControllerConfig() {
-                const nodeId = $("#node-input-controller").val();
+                const controllerId = $("#node-input-controller").val();
 
-                $.getJSON(`fusebox/controllerNodeConfig?id=${nodeId}`, function (data) {
-                    _controller = data;
+                if (_lastControllerId === controllerId) return;
+                _lastControllerId = controllerId;
 
-                    $('#mappings-container').editableList('empty');
-                    $('#mappings-container').editableList('addItems', mappings);
-                    updateTipText();
-                }).fail(function () {
-                    console.error("Failed to get controller configuration!");
-
-                    $('#mappings-container').editableList('empty');
-                    $('#mappings-container').editableList('addItems', mappings);
-                    updateTipText();
-                });
+                $.getJSON(`fusebox/controllerNodeConfig?id=${controllerId}`)
+                    .done(function (data) {
+                        _controller = data;
+                    })
+                    .fail(function () {
+                        console.error("Failed to query controller configuration!");
+                        RED.notify("Failed to query controller configuration!", { type: "error", timeout: 3000 });
+                        _controller = {};
+                    })
+                    .always(function () {
+                        $('#mappings-container').editableList('empty');
+                        $('#mappings-container').editableList('addItems', mappings);
+                        updateTipText();
+                    });
             }
 
             // Initialize the EditableList widget
@@ -117,14 +123,44 @@
                          </div>
                          <div style="width: 28px"></div>
                     `)),
+                    buttons: [{
+                        label: "delete all",
+                        icon: "fa fa-trash",
+                        title: "delete all data stream mappings",
+                        click: function (e) {
+                            $('#mappings-container').editableList('empty');
+
+                            defineOutputPorts();
+                            updateTipText();
+                        }
+                    },
+                    {
+                        label: "auto-generate entries",
+                        icon: "fa fa-refresh",
+                        title: "automatically generate rows for all available controller data streams",
+                        click: function (e) {
+                            const hasServices = _controller.filteredServices && Object.keys(_controller.filteredServices).length > 0;
+
+                            if (!hasServices) {
+                                RED.notify("No available data streams to auto-generate mappings!", { type: "warning", timeout: 3000 });
+                                return;
+                            }
+
+                            autoGenerateMappings();
+                        }
+                    }],
                     addItem: function (container, index, row) {
                         addRowElements(container, row);
 
                         const elements = getRowElements(container);
 
                         formatRow(elements, row);
-                        updateTipText();
                         attachRowEvents(elements);
+
+                        // Initialize autocomplete for the topic input in this row
+                        initializeAutocomplete(elements.topicElement, onAutocompleteSelect);
+
+                        updateTipText();
                         defineOutputPorts();
                     },
                     removeItem: function (data) {
@@ -134,13 +170,104 @@
                 });
             }
 
+            // Initialize autocomplete for topic inputs in the editable list
+            function initializeAutocomplete(element, onSelect = null) {
+                element.autocomplete({
+                    minLength: 0,
+                    source: function (request, response) {
+                        const term = request.term.toLowerCase();
+                        const selection = getTopics();
+
+                        const matches = selection?.filter(obj => {
+                            return obj.label.toLowerCase().indexOf(term) > -1
+                        });
+
+                        response(matches);
+                    },
+                    focus: function (event, ui) {
+                        // Don't change the input value on hover/focus
+                        event.preventDefault()
+                    },
+                    select: function (event, ui) {
+                        event.preventDefault();
+                        element.val(ui.item.topic);
+
+                        // Call the onSelect callback if provided
+                        if (onSelect) onSelect(element, ui.item);
+                    }
+                })
+                    .on('focus', function () {
+                        element.autocomplete('search', element.val() || '');
+                    })
+                    .autocomplete('instance')._renderItem = function (ul, item) {
+                        const term = this.term.trim();
+                        const label = item.label;
+                        let highlightedLabel = label;
+
+                        if (term) {
+                            const regex = new RegExp('(' + term.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&') + ')', 'ig');
+                            highlightedLabel = label.replace(regex, '<strong style="color:#e65; font-weight:bold">$1</strong>');
+                        }
+
+                        return $('<li></li>')
+                            .data('ui-autocomplete-item', item)
+                            .append(`<div>${highlightedLabel}</div>`)
+                            .appendTo(ul);
+                    };
+            }
+
+            // Return a list of topics from the controller configuration
+            // Structure: [ { key: "ABC", member: 1, topic: test/1, label: ... } ]
+            function getTopics() {
+                return _controller?.formattedTopics || []
+            }
+
+            // Further processing of a row after a topic is selected from the autocomplete
+            function onAutocompleteSelect(element, obj = {}) {
+                const container = element.closest('.red-ui-editableList-item-content');
+                let elements = getRowElements(container);
+
+                validateTopic(elements);
+
+                // Try to set the key and index fields according to the selected topic
+                const key = obj.key;
+                const member = obj.member;
+
+                const manual = elements.manualElement.is(':checked');
+                const keyNameSelect = elements.keySelectElement.val();
+                const index = elements.indexElement.val();
+
+                if (manual || !key || !member) return;
+
+                if (topicRelatedToService(`${key}.${member}`)) {
+                    elements.keySelectElement.val(key).trigger('change');
+                    elements.dataTypeElement.val("value").trigger('change');
+
+                    // NB! Because populateIndex() changes the element, find the latest
+                    elements = getRowElements(container);
+                    elements.indexElement.val(String(member)).trigger("input").trigger('change');
+                }
+            }
+
+            // Return true if the topic is related to a service
+            function topicRelatedToService(topic) {
+                const filteredServices = _controller?.filteredServices;
+
+                if (!filteredServices || !topic || !topic.includes(".")) return false;
+
+                const key = topic.split(".")[0];
+                const member = topic.split(".")[1];
+
+                return filteredServices?.[key] && Number.isInteger(parseInt(member)) && parseInt(member) >= 1 && parseInt(member) <= 16;
+            }
+
             // Append the row to the container
             function addRowElements(container, row) {
                 const rowHtml = `
                 <div class="read-static-data-streams-list">
                     <div class="checkbox-container">
                         <input type="checkbox" class="node-input-manual" ${row.manual === true ? 'checked' : ''}>
-                        <div class="helper-text">Manual entry</div>
+                        <div class="helper-text"></div>
                     </div>
                     <select class="node-input-keyNameSelect"></select>
                     <input type="text" class="node-input-keyNameManual" placeholder="Manual entry, e.g. ABCW" value="${row.keyNameManual || ''}">
@@ -166,16 +293,16 @@
                     keySelectElement: container.find('.node-input-keyNameSelect'),
                     keyManualElement: container.find('.node-input-keyNameManual'),
                     dataTypeElement: container.find('.node-input-dataType'),
-                    coefficientElement: container.find('.node-input-coefficient'),
                     indexElement: container.find('.node-input-index'),
+                    coefficientElement: container.find('.node-input-coefficient'),
                     topicElement: container.find('.node-input-topic')
                 };
             }
 
             // Format the newly created / intialized row's elements
             function formatRow(elements, row) {
-                const services = _controller.services || {};
-                const keyNames = sortKeysByServiceNames(services);
+                const filteredServices = _controller.filteredServices || {};
+                const keyNames = sortKeysByServiceNames(filteredServices);
 
                 const keySelectElement = elements.keySelectElement;
                 const selectedKey = row.keyNameSelect;
@@ -186,7 +313,7 @@
 
                 // Populate the key selection dropdown with available keys
                 keyNames.forEach(key => {
-                    const serviceName = services[key]?.servicename || "???";
+                    const serviceName = filteredServices[key]?.servicename || "???";
                     const optionText = `${serviceName} (${key})`;
                     const newOption = $(`<option value="${key}" ${selectedKey === key ? 'selected' : ''}>${optionText}</option>`);
                     keySelectElement.append(newOption);
@@ -229,6 +356,9 @@
 
                     updateCoefficient(elements);
                     validateCoefficient(elements);
+
+                    updateTopic(elements);
+                    validateTopic(elements);
                 });
 
                 elements.keyManualElement.on('change', function () {
@@ -304,11 +434,11 @@
                 const keyNameSelect = elements.keySelectElement.val();
                 const keyNameManual = elements.keyManualElement.val();
 
-                const services = _controller.services || {};
+                const filteredServices = _controller.filteredServices || {};
                 const keyName = keyNameSelect || keyNameManual;
 
-                if (keyName && services[keyName]) {
-                    const convCoef = services[keyName]?.conv_coef || 1;
+                if (keyName && filteredServices[keyName]) {
+                    const convCoef = filteredServices[keyName]?.conv_coef || 1;
                     elements.coefficientElement.val(convCoef);
                     elements.coefficientElement.prop('disabled', true);
                 } else {
@@ -332,7 +462,12 @@
                 let el = elements.indexElement;
                 const prevIndex = el.val();
 
-                const id = Math.random().toString(36).substr(2, 9);
+                // Check if element already has a data-id
+                const existingId = el.attr('data-id');
+
+                // Use existing ID if available, otherwise generate a new one
+                const id = existingId || Math.random().toString(36).substr(2, 9);
+
                 const members = _controller?.channels?.[keyNameSelect];
 
                 if (keyNameSelect && members) {
@@ -353,11 +488,30 @@
                 // Reattach the event listener to the new element
                 el.on('change', function () {
                     updateTipText();
+                    updateTopic(elements);
+                    validateTopic(elements);
                 });
 
                 el.on('input', function () {
                     validateIndex(elements);
                 });
+            }
+
+            // Update the topic element based on the selected key and member
+            function updateTopic(elements) {
+                const manual = elements.manualElement.is(':checked');
+                const keyNameSelect = elements.keySelectElement.val();
+                const index = elements.indexElement.val();
+                const topic = elements.topicElement.val();
+
+                if (manual || !keyNameSelect || !index) return;
+
+                const filteredServices = _controller.filteredServices || {};
+
+                // Default topic format: "key.member"
+                if (topic === "" || topicRelatedToService(topic)) {
+                    elements.topicElement.val(`${keyNameSelect}.${index}`);
+                }
             }
 
             // Update tip text based on current settings
@@ -373,7 +527,7 @@
 
                 const tipText1 = `Routing ${rows.length} values from controller (${_controller.uniqueId || "???"})'s data streams.`;
                 const tipText2 = `The payload will be divided by the coefficient (if applicable).`;
-                const tipText3 = `Outgoing message format: ${msgType === "together" ? `{"${topic1}": payload1, "${topic2}": payload2, ...}` : `{"topic": topic, "payload": value}`}`;
+                const tipText3 = `Outgoing message format: ${msgType === "together" ? `{"${topic1}": float, "${topic2}": int, ...}` : `{"topic": str, "payload": float}`}`;
 
                 $("#node-input-tip-text-1").text(tipText1);
                 $("#node-input-tip-text-2").text(tipText2);
@@ -471,8 +625,46 @@
                 return channels?.[name]?.[member]?.[key] ?? null;
             }
 
-            function findIndexesBySvcName(channels = {}, name) {
-                return Object.keys(channels?.[name]) ?? [];
+            // Auto-generate mappings for all available services
+            function autoGenerateMappings() {
+                const filteredServices = _controller.filteredServices || {};
+                const keyNames = sortKeysByServiceNames(filteredServices);
+                const newMappings = [];
+
+                // Clear existing mappings first
+                $('#mappings-container').editableList('empty');
+
+                // Create a mapping for each key and its members
+                keyNames.forEach(keyName => {
+                    const service = filteredServices[keyName];
+                    if (!service) return;
+
+                    // Get all members for this service key
+                    const members = _controller?.channels?.[keyName] || {};
+
+                    // Add an entry for each member
+                    Object.values(members).forEach(member => {
+                        const idx = member.member;
+                        newMappings.push({
+                            manual: false,
+                            keyNameSelect: keyName,
+                            keyNameManual: "",
+                            dataType: "value",
+                            index: idx,
+                            coefficient: service?.conv_coef || 1,
+                            topic: `${keyName}.${idx}`
+                        });
+                    });
+                });
+
+                // Add all mappings to the list
+                $('#mappings-container').editableList('addItems', newMappings);
+
+                // Update ports and tip text
+                defineOutputPorts();
+                updateTipText();
+
+                RED.notify("Generated " + newMappings.length + " data stream mappings", { type: "success", timeout: 3000 });
             }
 
             // Iterate over each mapping row and store the elements

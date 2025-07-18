@@ -12,6 +12,7 @@ module.exports = function (RED) {
         node.topic = config.outputTopic ?? null;
         node.type = config.gateType || "and";
         node.mode = config.outputMode || "all";
+        node.format = config.formatMode || "passthrough";
 
         this.ruleManager = new RuleManager(RED, node, node.type);
 
@@ -29,12 +30,22 @@ module.exports = function (RED) {
                 const { result, parameters, metadata } = obj;
 
                 if (node.mode === "all" || (node.mode === "true" && result) || (node.mode === "false" && !result)) {
-                    const outMsg = { ...msg, payload: result, parameters, trigger: {} };
-                    delete outMsg.topic;
+                    let outMsg = null;
 
-                    if (!invalidValues.includes(node.topic)) outMsg.topic = node.topic;
-                    if (!invalidValues.includes(msg.payload)) outMsg.trigger.payload = msg.payload;
-                    if (!invalidValues.includes(msg.topic)) outMsg.trigger.topic = msg.topic;
+                    // Passthrough mode: send the original message
+                    if (node.format === "passthrough") {
+                        outMsg = { ...msg };
+                    }
+
+                    // Result mode: send the boolean result alongside parameters
+                    else if (node.format === "comprehensive") {
+                        outMsg = { ...msg, payload: result, parameters, trigger: {} };
+                        delete outMsg.topic;
+
+                        if (!invalidValues.includes(node.topic)) outMsg.topic = node.topic;
+                        if (!invalidValues.includes(msg.payload)) outMsg.trigger.payload = msg.payload;
+                        if (!invalidValues.includes(msg.topic)) outMsg.trigger.topic = msg.topic;
+                    }
 
                     node.status({ fill: result ? "green" : "red", shape: "dot", text: `${metadata.validated} of ${metadata.total}, output: ${result} (${formatDate()})` });
 
@@ -56,7 +67,7 @@ module.exports = function (RED) {
                 hour: "2-digit",
                 minute: "2-digit",
                 second: "2-digit",
-                hour12: false, // Use 24-hour format
+                hour12: false // Use 24-hour format
             };
 
             return now.toLocaleString("en-GB", options); // 'en-GB' locale for DD/MM/YYYY format

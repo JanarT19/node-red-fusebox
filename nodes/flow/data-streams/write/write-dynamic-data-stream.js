@@ -6,8 +6,6 @@ module.exports = function (RED) {
         RED.nodes.createNode(this, config);
         const node = this;
 
-        var previousValues = {};
-
         // Retrieve configuration settings
         node.name = config.name;
         node.outputMode = config.outputMode;
@@ -27,6 +25,9 @@ module.exports = function (RED) {
         node.coefficient = config.coefficient;
         node.coefficientType = config.coefficientType;
 
+        // Stores latest output of each row to compare against
+        const previousValues = {};
+
         // Retrieve the config node's settings
         node.controller = RED.nodes.getNode(config.controller);
 
@@ -37,24 +38,16 @@ module.exports = function (RED) {
             return;
         }
 
-        // Initialize global context to get and set values
-        const globalStatesKey = `${node.controller.uniqueId}_states`;
-        const globalAllStatesKey = `${node.controller.uniqueId}_allstates`; // Fallback
-        const globalContext = node.context().global;
-
-        // Check for unnecessary form values
+        // Validation constants
         const invalidValues = ["", null, undefined];
-        const outputModeValid = ["change", "all"];
+        const outputModeValid = ["all", "change"];
         const channelTypeValid = ["ai", "ao", "di", "do"];
         const discretePayloadValid = [0, 1];
 
+        const outputMode = node.outputMode;
+
         // Listen for input messages
         node.on("input", function (msg) {
-            const dataStreams = globalContext.get(globalStatesKey);
-            const fallbackDataStreams = globalContext.get(globalAllStatesKey);
-
-            const outputMode = node.outputMode;
-
             const keyName = evaluate(node.keyName, node.keyNameType, node, msg);
             const channelType = evaluate(node.channelType, node.channelTypeType, node, msg);
             const index = parseInt(evaluate(node.index, node.indexType, node, msg));
@@ -65,18 +58,6 @@ module.exports = function (RED) {
             if (!keyName) {
                 node.error("Data stream name required");
                 node.status({ fill: "red", shape: "dot", text: "Data stream name required" });
-                return;
-            }
-
-            if (!dataStreams && !fallbackDataStreams) {
-                node.error("No data streams queried");
-                node.status({ fill: "red", shape: "dot", text: `No data streams queried from: ${node.controller.uniqueId}` });
-                return;
-            }
-
-            if (!dataStreams?.[keyName] && !fallbackDataStreams?.[keyName]) {
-                node.error(`Unknown data stream: ${keyName}`);
-                node.status({ fill: "red", shape: "dot", text: `Unknown data stream: ${keyName}` });
                 return;
             }
 
@@ -126,7 +107,7 @@ module.exports = function (RED) {
                 name: keyName,
                 index,
                 type: channelType,
-                payload,
+                payload
             };
 
             if (channelType.startsWith("a")) {
@@ -136,16 +117,22 @@ module.exports = function (RED) {
             // Initialize the previous values object
             const previousValue = getPreviousValue(parameters, "value");
             const previousRequest = getPreviousValue(parameters, "request");
-            const previousTimestamp = getPreviousValue(parameters, "timestamp");
 
-            // Check output mode and compare with previous value
-            // Do not send output if the value hasn't changed, unless the previous value was sent more than 5 seconds ago
+            // Initialize global context to get and set values
+            const outputContextKey = `${node.controller.uniqueId}_output_states`;
+            const globalContext = node.context().global;
+
+            // Do not send output if the value hasn't changed
+            // PS. In addition to checking the node's previous value, we also check the latest value saved to global context
             if (outputMode === "change" && previousValue !== null && previousValue === payload) {
-                const values = dataStreams?.[keyName]?.values ?? fallbackDataStreams?.[keyName]?.values;
-                const latestValue = values?.[index - 1] ?? null;
+                const outputContext = globalContext.get(outputContextKey);
+                const outputContextValues = outputContext?.[keyName]?.values || [];
+                const outputContextValue = outputContextValues?.[index - 1] ?? null;
 
-                if (!latestValue || latestValue === payload || previousTimestamp > Date.now() - 5000) {
-                    node.status({ fill: "grey", shape: "dot", text: `Unchanged ${keyName}.${index}: ${payload} (${formatDate()})` });
+                if (outputContextValue === null) return;
+
+                if (outputContextValue !== null && outputContextValue === payload) {
+                    node.debug(`Skipping sending unchanged value for ${keyName}.${index}`);
                     return;
                 }
             }
@@ -161,9 +148,9 @@ module.exports = function (RED) {
                 localhost: {
                     [`${keyName}.${index}`]: {
                         v: payload,
-                        type: channelType,
-                    },
-                },
+                        type: channelType
+                    }
+                }
             };
 
             setPreviousRequest(parameters, true);
@@ -197,8 +184,8 @@ module.exports = function (RED) {
                 path: "/setup",
                 method: "POST",
                 headers: {
-                    "Content-Type": "application/json",
-                },
+                    "Content-Type": "application/json"
+                }
             };
 
             node.debug(`Querying HTTP: ${JSON.stringify(options)} with body ${JSON.stringify(postData)}`);
@@ -338,7 +325,7 @@ module.exports = function (RED) {
                 hour: "2-digit",
                 minute: "2-digit",
                 second: "2-digit",
-                hour12: false, // Use 24-hour format
+                hour12: false // Use 24-hour format
             };
 
             return now.toLocaleString("en-GB", options); // 'en-GB' locale for DD/MM/YYYY format

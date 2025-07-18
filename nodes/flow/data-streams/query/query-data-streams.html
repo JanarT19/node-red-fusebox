@@ -79,7 +79,7 @@
                 const udpPort = _controller.udpPort || "???";
 
                 let tipText1 = "";
-                let tipText2 = `In addition, received data will be saved to global context under the key: '${uniqueId}_states'`;
+                let tipText2 = `Output format: { payload: { name: { values: [...], status: int, timestamp: int } }, "controller": { ... } }`;
 
                 if (protocol === "HTTP") {
                     tipText1 += `Controller (${uniqueId}) data will be queried using HTTP every ${queryInterval} seconds.`;

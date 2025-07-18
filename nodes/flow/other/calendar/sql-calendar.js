@@ -19,9 +19,6 @@ module.exports = function (RED) {
         node.title = config.title;
         node.titleType = config.titleType;
 
-        node.description = config.description;
-        node.descriptionType = config.descriptionType;
-
         node.value = config.value;
         node.valueType = config.valueType;
 
@@ -33,9 +30,6 @@ module.exports = function (RED) {
 
         node.end = config.end;
         node.endType = config.endType;
-
-        node.source = config.source;
-        node.sourceType = config.sourceType;
 
         // Retrieve the config node's settings
         node.controller = RED.nodes.getNode(config.controller);
@@ -58,22 +52,20 @@ module.exports = function (RED) {
 
             const id = parseInt(evaluate(node.eventId, node.eventIdType, node, msg));
             const title = evaluate(node.title, node.titleType, node, msg);
-            const description = evaluate(node.description, node.descriptionType, node, msg);
             const value = evaluate(node.value, node.valueType, node, msg);
             let timestamp = evaluate(node.timestamp, node.timestampType, node, msg);
-            let ts_min = evaluate(node.start, node.startType, node, msg);
-            let ts_max = evaluate(node.end, node.endType, node, msg);
-            const source = evaluate(node.source, node.sourceType, node, msg);
+            let start = evaluate(node.start, node.startType, node, msg);
+            let end = evaluate(node.end, node.endType, node, msg);
 
             // Convert date objects and ISO strings to unix timestamps (integers)
             if (timestamp instanceof Date) timestamp = timestamp.getTime();
             if (typeof timestamp === "string") timestamp = new Date(timestamp).getTime();
 
-            if (ts_min instanceof Date) ts_min = ts_min.getTime();
-            if (typeof ts_min === "string") ts_min = new Date(ts_min).getTime();
+            if (start instanceof Date) start = start.getTime();
+            if (typeof start === "string") start = new Date(start).getTime();
 
-            if (ts_max instanceof Date) ts_max = ts_max.getTime();
-            if (typeof ts_max === "string") ts_max = new Date(ts_max).getTime();
+            if (end instanceof Date) end = end.getTime();
+            if (typeof end === "string") end = new Date(end).getTime();
 
             // Basic validation
             if (!operationModeValid.includes(operationMode)) {
@@ -82,8 +74,8 @@ module.exports = function (RED) {
                 return;
             }
 
-            // Required: title, timestamp, source
-            // Optional: description, value
+            // Required: title, timestamp
+            // Optional: value
             if (operationMode === "create") {
                 if (invalidValues.includes(title)) {
                     node.error("Event title required");
@@ -91,21 +83,15 @@ module.exports = function (RED) {
                     return;
                 }
 
-                if (invalidValues.includes(timestamp)) {
+                if (invalidValues.includes(timestamp) && (invalidValues.includes(start) || invalidValues.includes(end))) {
                     node.error("Timestamp required");
-                    node.status({ fill: "red", shape: "dot", text: "Event timestamp required" });
-                    return;
-                }
-
-                if (invalidValues.includes(source)) {
-                    node.error("Event source required");
-                    node.status({ fill: "red", shape: "dot", text: "Event source required" });
+                    node.status({ fill: "red", shape: "dot", text: "Event timestamp(s) required" });
                     return;
                 }
             }
 
             // Required: eventId, title, timestamp
-            // Optional: description, value, source
+            // Optional: value
             if (operationMode === "update") {
                 if (invalidValues.includes(id) || isNaN(id)) {
                     node.error("Valid eventId required");
@@ -126,16 +112,14 @@ module.exports = function (RED) {
                 }
             }
 
-            // Required: eventId OR mix of title, description, value, start, end, source
+            // Required: eventId OR mix of title, value, start, end
             if (operationMode === "delete") {
                 if (
                     (invalidValues.includes(id) || isNaN(id)) &&
                     invalidValues.includes(title) &&
-                    invalidValues.includes(description) &&
                     invalidValues.includes(value) &&
-                    invalidValues.includes(ts_min) &&
-                    invalidValues.includes(ts_max) &&
-                    invalidValues.includes(source)
+                    invalidValues.includes(start) &&
+                    invalidValues.includes(end)
                 ) {
                     node.error("At least one parameter required");
                     node.status({ fill: "red", shape: "dot", text: "At least one parameter required" });
@@ -143,7 +127,7 @@ module.exports = function (RED) {
                 }
             }
 
-            const parameters = { id, title, description, value, timestamp, ts_min, ts_max, source, operationMode };
+            const parameters = { id, title, value, timestamp, start, end, operationMode };
 
             // Initialize the previous values object
             const previousRequest = getPreviousValue(parameters, "request");
@@ -156,14 +140,14 @@ module.exports = function (RED) {
 
             // Build the POST request
             const postData = {
-                configuration: { id, title, description, value, timestamp, ts_min, ts_max, source, check: operationMode === "check" },
+                configuration: { id, title, value, timestamp, start, end, check: operationMode === "check" }
             };
 
             // Remove empty values
             for (const key in postData.configuration) {
                 const val = postData.configuration[key];
 
-                if (invalidValues.includes(val) || (["id", "timestamp", "ts_min", "ts_max"].includes(key) && isNaN(val))) {
+                if (invalidValues.includes(val) || (["id", "timestamp", "start", "end"].includes(key) && isNaN(val))) {
                     delete postData.configuration[key];
                 }
             }
@@ -177,7 +161,7 @@ module.exports = function (RED) {
 
                     const outMsg = {
                         ...msg,
-                        ...(!invalidValues.includes(topic) && { topic }),
+                        ...(!invalidValues.includes(topic) && { topic })
                     };
 
                     node.send({ ...outMsg, payload: result, parameters, controller: { id: node.controller.id, uniqueId: node.controller.uniqueId, host: node.controller.host } });
@@ -189,7 +173,7 @@ module.exports = function (RED) {
 
                     const outMsg = {
                         ...msg,
-                        ...(!invalidValues.includes(topic) && { topic }),
+                        ...(!invalidValues.includes(topic) && { topic })
                     };
 
                     node.send({ ...outMsg, payload: false, parameters, controller: { id: node.controller.id, uniqueId: node.controller.uniqueId, host: node.controller.host } });
@@ -225,8 +209,8 @@ module.exports = function (RED) {
                 path: path,
                 method: method,
                 headers: {
-                    "Content-Type": "application/json",
-                },
+                    "Content-Type": "application/json"
+                }
             };
 
             node.debug(`Querying HTTP: ${JSON.stringify(options)} with body ${JSON.stringify(postData)}`);
@@ -248,7 +232,7 @@ module.exports = function (RED) {
                                 node.status({
                                     fill: "green",
                                     shape: "dot",
-                                    text: `Calendar entry ${operationMode}${["read", "check"].includes(operationMode) ? "" : "d"} (${formatDate()})`,
+                                    text: `Calendar entry ${operationMode}${["read", "check"].includes(operationMode) ? "" : "d"} (${formatDate()})`
                                 });
 
                                 resolve(parsedData);
@@ -344,7 +328,7 @@ module.exports = function (RED) {
                 hour: "2-digit",
                 minute: "2-digit",
                 second: "2-digit",
-                hour12: false, // Use 24-hour format
+                hour12: false // Use 24-hour format
             };
 
             return now.toLocaleString("en-GB", options); // 'en-GB' locale for DD/MM/YYYY format

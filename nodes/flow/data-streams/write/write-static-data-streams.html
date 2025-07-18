@@ -26,6 +26,7 @@
         oneditprepare: function () {
             const node = this;
             let _controller = {};
+            let _lastControllerId = null;
 
             // Load existing mappings or initialize an empty array
             const mappings = node.mappings || [];
@@ -36,11 +37,12 @@
             $('#node-input-outputMode').val(node.outputMode);
             $('#node-input-payloadType').val(node.payloadType);
 
-            // Define event listeners for form fields
+            // Load controller data
             $("#node-input-controller").change(function () {
                 queryControllerConfig();
             });
 
+            // Define event listeners for form fields
             $("#mappings-container, #node-input-payloadType, #node-input-outputMode").change(function () {
                 updateTipText();
             });
@@ -57,26 +59,27 @@
             // Initialize the form fields
             initializeEditableList();
 
-            // Get the controller node configuration to populate fields and update helper text
+            // Query variables related to controller configuration
             function queryControllerConfig() {
-                const nodeId = $("#node-input-controller").val();
+                const controllerId = $("#node-input-controller").val();
 
-                $.getJSON(`fusebox/controllerNodeConfig?id=${nodeId}`, function (data) {
-                    _controller = data;
+                if (_lastControllerId === controllerId) return;
+                _lastControllerId = controllerId;
 
-                    // Execute functions after successful query
-                    $('#mappings-container').editableList('empty');
-                    $('#mappings-container').editableList('addItems', mappings);
-
-                    updateTipText();
-                }).fail(function () {
-                    console.error("Failed to get controller configuration!");
-
-                    $('#mappings-container').editableList('empty');
-                    $('#mappings-container').editableList('addItems', mappings);
-
-                    updateTipText();
-                });
+                $.getJSON(`fusebox/controllerNodeConfig?id=${controllerId}`)
+                    .done(function (data) {
+                        _controller = data;
+                    })
+                    .fail(function () {
+                        console.error("Failed to query controller configuration!");
+                        RED.notify("Failed to query controller configuration!", { type: "error", timeout: 3000 });
+                        _controller = {};
+                    })
+                    .always(function () {
+                        $('#mappings-container').editableList('empty');
+                        $('#mappings-container').editableList('addItems', mappings);
+                        updateTipText();
+                    });
             }
 
             // Initialize the EditableList widget
@@ -98,19 +101,150 @@
                          </div>
                          <div style="width: 28px"></div>
                     `)),
+                    buttons: [{
+                        label: "delete all",
+                        icon: "fa fa-trash",
+                        title: "delete all data stream mappings",
+                        click: function (e) {
+                            $('#mappings-container').editableList('empty');
+
+                            updateTipText();
+                        }
+                    },
+                    {
+                        label: "auto-generate entries",
+                        icon: "fa fa-refresh",
+                        title: "automatically generate rows for all available controller data streams",
+                        click: function (e) {
+                            const hasServices = _controller.writableServices && Object.keys(_controller.writableServices).length > 0;
+
+                            if (!hasServices) {
+                                RED.notify("No available data streams to auto-generate mappings!", { type: "warning", timeout: 3000 });
+                                return;
+                            }
+
+                            autoGenerateMappings();
+                        }
+                    }],
                     addItem: function (container, index, row) {
                         addRowElements(container, row);
 
                         const elements = getRowElements(container);
 
                         formatRow(elements, row);
-                        updateTipText();
                         attachRowEvents(elements);
+
+                        // Initialize autocomplete for the topic input in this row
+                        initializeAutocomplete(elements.topicElement, onAutocompleteSelect);
+
+                        updateTipText();
                     },
                     removeItem: function (data) {
                         updateTipText();
                     }
                 });
+            }
+
+            // Initialize autocomplete for topic inputs in the editable list
+            function initializeAutocomplete(element, onSelect = null) {
+                element.autocomplete({
+                    minLength: 0,
+                    source: function (request, response) {
+                        const term = request.term.toLowerCase();
+                        const selection = getTopics();
+
+                        const matches = selection?.filter(obj => {
+                            return obj.label.toLowerCase().indexOf(term) > -1
+                        });
+
+                        response(matches);
+                    },
+                    focus: function (event, ui) {
+                        // Don't change the input value on hover/focus
+                        event.preventDefault()
+                    },
+                    select: function (event, ui) {
+                        event.preventDefault();
+                        element.val(ui.item.topic);
+
+                        // Call the onSelect callback if provided
+                        if (onSelect) onSelect(element, ui.item);
+                    }
+                })
+                    .on('focus', function () {
+                        element.autocomplete('search', element.val() || '');
+                    })
+                    .autocomplete('instance')._renderItem = function (ul, item) {
+                        const term = this.term.trim();
+                        const label = item.label;
+                        let highlightedLabel = label;
+
+                        if (term) {
+                            const regex = new RegExp('(' + term.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&') + ')', 'ig');
+                            highlightedLabel = label.replace(regex, '<strong style="color:#e65; font-weight:bold">$1</strong>');
+                        }
+
+                        return $('<li></li>')
+                            .data('ui-autocomplete-item', item)
+                            .append(`<div>${highlightedLabel}</div>`)
+                            .appendTo(ul);
+                    };
+            }
+
+            // Return a list of topics from the controller configuration
+            // Structure: [ { key: "ABC", member: 1, topic: test/1, label: ... } ]
+            function getTopics() {
+                const allTopics = _controller?.formattedTopics || []
+                const writableServices = _controller?.writableServices || {};
+                const filteredServices = _controller?.filteredServices || {};
+
+                const filteredTopics = allTopics.filter(topic => {
+                    const key = topic.key;
+                    const member = topic.member;
+
+                    // Only include topics that are writable
+                    return filteredServices?.[key] && writableServices?.[key] && writableServices?.[key]?.includes(member);
+                });
+
+                return filteredTopics;
+            }
+
+            // Further processing of a row after a topic is selected from the autocomplete
+            function onAutocompleteSelect(element, obj = {}) {
+                const container = element.closest('.red-ui-editableList-item-content');
+                let elements = getRowElements(container);
+
+                validateTopic(elements);
+
+                // Try to set the key and index fields according to the selected topic
+                const key = obj.key;
+                const member = obj.member;
+
+                const manual = elements.manualElement.is(':checked');
+                const keyNameSelect = elements.keySelectElement.val();
+                const index = elements.indexElement.val();
+
+                if (manual || !key || !member) return;
+
+                if (topicRelatedToService(`${key}.${member}`)) {
+                    elements.keySelectElement.val(key).trigger('change');
+
+                    // NB! Because populateIndex() changes the element, find the latest
+                    elements = getRowElements(container);
+                    elements.indexElement.val(String(member)).trigger("input").trigger('change');
+                }
+            }
+
+            // Return true if the topic is related to a service
+            function topicRelatedToService(topic) {
+                const filteredServices = _controller?.filteredServices;
+
+                if (!filteredServices || !topic || !topic.includes(".")) return false;
+
+                const key = topic.split(".")[0];
+                const member = topic.split(".")[1];
+
+                return filteredServices?.[key] && Number.isInteger(parseInt(member)) && parseInt(member) >= 1 && parseInt(member) <= 16;
             }
 
             // Append the row to the container
@@ -121,7 +255,7 @@
                     <span class="node-input-arrow">&#8594;</span>
                     <div class="checkbox-container">
                         <input type="checkbox" class="node-input-manual" ${row.manual === true ? 'checked' : ''}>
-                        <div class="helper-text">Manual entry</div>
+                        <div class="helper-text"></div>
                     </div>
                     <select class="node-input-keyNameSelect"></select>
                     <input type="text" class="node-input-keyNameManual" placeholder="Manual entry, e.g. ABCW" value="${row.keyNameManual || ''}">
@@ -156,29 +290,26 @@
 
             // Format the newly created / intialized row's elements
             function formatRow(elements, row) {
-                const services = _controller.services || {};
-
-                const keySelectElement = elements.keySelectElement;
-                const selectedKey = row.keyNameSelect;
-
-                // Find the service keys that are writable
-                const writableKeys = findAllowedWriteSvcKeys(_controller.channels);
-                const filteredServices = Object.keys(services).reduce((acc, key) => {
-                    if (writableKeys[key]) {
-                        acc[key] = services[key];
+                const filteredServices = _controller.filteredServices || {};
+                const writableServices = _controller.writableServices || {};
+                const finalFilteredServices = Object.keys(filteredServices).reduce((acc, key) => {
+                    if (writableServices[key]) {
+                        acc[key] = filteredServices[key];
                     }
 
                     return acc;
                 }, {});
 
-                const filteredSvcKeys = sortKeysByServiceNames(filteredServices);
-                const allSvcKeys = sortKeysByServiceNames(services);
+                const keySelectElement = elements.keySelectElement;
+                const selectedKey = row.keyNameSelect;
+
+                const filteredSvcKeys = sortKeysByServiceNames(finalFilteredServices);
 
                 clearDropdown(keySelectElement, { text: "Select data stream..." });
 
                 // Populate the key selection dropdown with available keys
                 filteredSvcKeys.forEach(key => {
-                    const serviceName = services[key]?.servicename || "???";
+                    const serviceName = filteredServices[key]?.servicename || "???";
 
                     const text = `${serviceName} (${key})`;
                     const el = $(`<option value="${key}" ${selectedKey === key ? 'selected' : ''}>${text}</option>`);
@@ -198,7 +329,7 @@
                 populatePayload(elements);
                 validatePayload(elements);
 
-                populateCoefficient(elements);
+                updateCoefficient(elements);
                 validateCoefficient(elements);
 
                 validateTopic(elements);
@@ -213,7 +344,7 @@
                     populateIndex(elements);
                     validateIndex(elements);
 
-                    populateCoefficient(elements);
+                    updateCoefficient(elements);
                     validateCoefficient(elements);
                 });
 
@@ -226,8 +357,11 @@
                     populateChannelType(elements);
                     validateChannelType(elements);
 
-                    populateCoefficient(elements);
+                    updateCoefficient(elements);
                     validateCoefficient(elements);
+
+                    updateTopic(elements);
+                    validateTopic(elements);
                 });
 
                 elements.keyManualElement.on('change', function () {
@@ -241,7 +375,7 @@
                     populateChannelType(elements);
                     validateChannelType(elements);
 
-                    populateCoefficient(elements);
+                    updateCoefficient(elements);
                     validateCoefficient(elements);
                 });
 
@@ -252,7 +386,7 @@
                     populatePayload(elements);
                     validatePayload(elements);
 
-                    populateCoefficient(elements);
+                    updateCoefficient(elements);
                     validateCoefficient(elements);
                 });
 
@@ -291,16 +425,16 @@
             }
 
             // Update coefficient field based on the selected key
-            function populateCoefficient(elements) {
+            function updateCoefficient(elements) {
                 const channelType = elements.channelTypeElement.val() ?? "";
                 const keyNameSelect = elements.keySelectElement.val();
                 const keyNameManual = elements.keyManualElement.val();
 
-                const services = _controller.services || {};
+                const filteredServices = _controller.filteredServices || {};
                 const keyName = keyNameSelect || keyNameManual;
 
-                if (keyName && services[keyName]) {
-                    const convCoef = services[keyName]?.conv_coef || 1;
+                if (keyName && filteredServices[keyName]) {
+                    const convCoef = filteredServices[keyName]?.conv_coef || 1;
 
                     elements.coefficientElement.val(convCoef);
                     elements.coefficientElement.prop('disabled', true);
@@ -322,15 +456,20 @@
                 let el = elements.indexElement;
                 const prevIndex = el.val();
 
-                const id = Math.random().toString(36).substr(2, 9);
-                const filteredKeys = findAllowedWriteSvcKeys(_controller.channels);
+                // Check if element already has a data-id
+                const existingId = el.attr('data-id');
+
+                // Use existing ID if available, otherwise generate a new one
+                const id = existingId || Math.random().toString(36).substr(2, 9);
+
+                const writableServices = _controller.writableServices || {};
 
                 if (keyNameSelect) {
-                    const indexes = filteredKeys[keyNameSelect] || [];
-                    const options = indexes.map(index => {
-                        const desc = findValueBySvcNameAndMember(_controller.channels, keyNameSelect, index, "desc");
+                    const indexes = writableServices[keyNameSelect] || [];
+                    const options = indexes.map(idx => {
+                        const desc = findValueBySvcNameAndMember(_controller.channels, keyNameSelect, idx, "desc");
 
-                        return `<option value="${index}" ${prevIndex == index ? "selected" : ""}>${index} ${desc ? `(${desc})` : ``}</option>`
+                        return `<option value="${idx}" ${prevIndex == idx ? "selected" : ""}>${idx} ${desc ? `(${desc})` : ``}</option>`
                     })
 
                     el.replaceWith(`<select data-id="${id}" class="node-input-index">${options.join('')}</select>`);
@@ -341,6 +480,11 @@
                 el = elements.indexElement = $(`.node-input-index[data-id="${id}"]`); // Update the reference using the custom attribute
 
                 // Reattach the event listener to the new element
+                el.on('change', function () {
+                    updateTopic(elements);
+                    validateTopic(elements);
+                });
+
                 el.on('input', function () {
                     validateIndex(elements);
                 });
@@ -370,7 +514,7 @@
                     const channel = channels[keyNameSelect];
                     const member = channel[index];
 
-                    if (member.regtype === "s" || getBitWeights(member.cfg).includes(32768)) {
+                    if (["s", "s!"].includes(member.regtype)) {
                         if (member._type === "analogue") {
                             options = [{ value: "ai", text: "Analogue input (AI)" }];
                         } else if (member._type === "discrete") {
@@ -448,6 +592,21 @@
                 element.append($(`<option value="" ${disabled ? 'disabled' : ''} ${selected ? 'selected' : ''}>${text}</option>`));
             }
 
+            // Update the topic element based on the selected key and member
+            function updateTopic(elements) {
+                const manual = elements.manualElement.is(':checked');
+                const keyNameSelect = elements.keySelectElement.val();
+                const index = elements.indexElement.val();
+                const topic = elements.topicElement.val();
+
+                if (manual || !keyNameSelect || !index) return;
+
+                // Default topic format: "key.member"
+                if (topic === "" || topicRelatedToService(topic)) {
+                    elements.topicElement.val(`${keyNameSelect}.${index}`);
+                }
+            }
+
             // Update tip text based on current settings
             function updateTipText() {
                 const rows = getListElements();
@@ -483,6 +642,8 @@
 
             // Custom validation functions below
             function validateKeyName(elements) {
+                console.debug("Validating key name...");
+
                 const keyNameSelect = elements.keySelectElement.val();
                 const keyNameManual = elements.keyManualElement.val();
 
@@ -595,76 +756,55 @@
                 return normalKeys.concat(underscoreKeys);
             }
 
-            // Only certain services and members are allowed to be written to.
-            // Retrieve the members and descriptions of the allowed services.
-            // Requirements:
-            // 1. all regtype "s" services
-            // 2. all chantype "mb" services with (regtype "h" or "c") and (mbi,mba,regadd existing in output table or bit includes 32768)
-            function findAllowedWriteSvcKeys(channels = {}) {
-                const result = {};
-
-                // 1
-                for (const key in channels) {
-                    const channel = channels[key];
-
-                    for (index in channel) {
-                        const member = channel[index];
-                        const indexInt = parseInt(index);
-
-                        if (member.regtype === "s") {
-                            result[key] = result[key] || [];
-
-                            if (!result[key].includes(indexInt)) {
-                                result[key].push(indexInt);
-                            }
-                        }
-                    }
-                }
-
-                // 2
-                for (const key in channels) {
-                    const channel = channels[key];
-
-                    for (index in channel) {
-                        const member = channel[index];
-                        const indexInt = parseInt(index);
-
-                        if ((member.chantype === "mb" && (["h", "c"].includes(member.regtype)) && (member._output || getBitWeights(member.cfg).includes(32768)))) {
-                            result[key] = result[key] || [];
-
-                            if (!result[key].includes(indexInt)) {
-                                result[key].push(indexInt);
-                            }
-                        }
-                    }
-                }
-
-                return result;
-            }
-
             function findValueBySvcNameAndMember(channels = {}, name, member, key) {
                 return channels?.[name]?.[member]?.[key] ?? null;
             }
 
-            function findIndexesBySvcName(channels = {}, name) {
-                return Object.keys(channels?.[name]) ?? [];
+            // Auto-generate mappings for all available services
+            function autoGenerateMappings() {
+                const writableServices = _controller.writableServices || {};
+                const filteredServices = _controller.filteredServices || {};
+                const keyNames = sortKeysByServiceNames(filteredServices);
+                const newMappings = [];
+
+                // Clear existing mappings first
+                $('#mappings-container').editableList('empty');
+
+                // Create a mapping for each key and its members
+                keyNames.forEach(keyName => {
+                    const service = filteredServices[keyName];
+                    if (!service) return;
+
+                    // Get all members for this service key
+                    const members = _controller?.channels?.[keyName] || {};
+
+                    // Add an entry for each member
+                    Object.values(members).forEach(member => {
+                        const idx = member.member;
+
+                        if (!writableServices?.[keyName]?.includes(parseInt(idx))) return; // Skip if not writable
+
+                        newMappings.push({
+                            manual: false,
+                            keyNameSelect: keyName,
+                            keyNameManual: "",
+                            channelType: "",
+                            index: idx,
+                            coefficient: service?.conv_coef || 1,
+                            payload: "",
+                            topic: `${keyName}.${idx}`
+                        });
+                    });
+                });
+
+                // Add all mappings to the list
+                $('#mappings-container').editableList('addItems', newMappings);
+
+                // Update ports and tip text
+                updateTipText();
+
+                RED.notify("Generated " + newMappings.length + " data stream mappings", { type: "success", timeout: 3000 });
             }
-
-            function getBitWeights(decimalNumber) {
-                let bitWeights = [];
-                let bitValue = 1;
-
-                while (decimalNumber > 0) {
-                    if (decimalNumber & 1) {
-                        bitWeights.push(bitValue);
-                    }
-
-                    decimalNumber >>= 1;
-                    bitValue <<= 1;
-                }
-
-                return bitWeights;
-            };
 
             // Iterate over each mapping row and store the elements
             function getListElements() {
@@ -687,10 +827,10 @@
             node.controller = $("#node-input-controller").val();
             node.outputMode = $('#node-input-outputMode').val();
             node.payloadType = $('#node-input-payloadType').val();
-            node.mappings = getListValues();
+            node.mappings = getMappings();
 
             // Iterate over each mapping row and store the values
-            function getListValues() {
+            function getMappings() {
                 const mappings = [];
 
                 $('#mappings-container').editableList('items').each(function () {

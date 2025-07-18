@@ -15,9 +15,6 @@
             title: { value: "title" },
             titleType: { value: "msg" },
 
-            description: { value: "description" },
-            descriptionType: { value: "msg" },
-
             value: { value: "value" },
             valueType: { value: "msg" },
 
@@ -29,9 +26,6 @@
 
             end: { value: "end" },
             endType: { value: "msg" },
-
-            source: { value: "source" },
-            sourceType: { value: "msg" }
         },
         // Define the inputs and outputs of the node
         inputs: 1,
@@ -60,11 +54,6 @@
                 typeField: $("#node-input-titleType")
             });
 
-            $("#node-input-description").typedInput({
-                types: ['msg', 'flow', 'global'],
-                typeField: $("#node-input-descriptionType")
-            });
-
             $("#node-input-value").typedInput({
                 types: ['msg', 'flow', 'global'],
                 typeField: $("#node-input-valueType")
@@ -85,11 +74,6 @@
                 typeField: $("#node-input-endType")
             });
 
-            $("#node-input-source").typedInput({
-                types: ['msg', 'flow', 'global'],
-                typeField: $("#node-input-sourceType")
-            });
-
             // Populate form with node values
             $('#node-input-name').val(node.name);
             $('#node-input-topic').val(node.topic);
@@ -102,9 +86,6 @@
             $('#node-input-title').val(node.title);
             $('#node-input-titleType').val(node.titleType);
 
-            $('#node-input-description').val(node.description);
-            $('#node-input-descriptionType').val(node.descriptionType);
-
             $('#node-input-value').val(node.value);
             $('#node-input-valueType').val(node.valueType);
 
@@ -116,9 +97,6 @@
 
             $('#node-input-end').val(node.end);
             $('#node-input-endType').val(node.endType);
-
-            $('#node-input-source').val(node.source);
-            $('#node-input-sourceType').val(node.sourceType);
 
             // Define event listeners for form fields
             $("#node-input-controller").on('change', function () {
@@ -155,62 +133,50 @@
                     case "check":
                         $("#node-input-eventId").closest(".form-row").hide();
                         $("#node-input-title").closest(".form-row").show();
-                        $("#node-input-description").closest(".form-row").hide();
                         $("#node-input-value").closest(".form-row").hide();
                         $("#node-input-timestamp").closest(".form-row").hide();
                         $("#node-input-start").closest(".form-row").hide();
                         $("#node-input-end").closest(".form-row").hide();
-                        $("#node-input-source").closest(".form-row").hide();
                         break;
                     case "read":
                         $("#node-input-eventId").closest(".form-row").hide();
                         $("#node-input-title").closest(".form-row").show();
-                        $("#node-input-description").closest(".form-row").hide();
                         $("#node-input-value").closest(".form-row").hide();
                         $("#node-input-timestamp").closest(".form-row").hide();
                         $("#node-input-start").closest(".form-row").show();
                         $("#node-input-end").closest(".form-row").show();
-                        $("#node-input-source").closest(".form-row").show();
                         break;
                     case "create":
                         $("#node-input-eventId").closest(".form-row").hide();
                         $("#node-input-title").closest(".form-row").show();
-                        $("#node-input-description").closest(".form-row").show();
                         $("#node-input-value").closest(".form-row").show();
-                        $("#node-input-timestamp").closest(".form-row").show();
-                        $("#node-input-start").closest(".form-row").hide();
-                        $("#node-input-end").closest(".form-row").hide();
-                        $("#node-input-source").closest(".form-row").show();
+                        $("#node-input-timestamp").closest(".form-row").hide();
+                        $("#node-input-start").closest(".form-row").show();
+                        $("#node-input-end").closest(".form-row").show();
                         break;
                     case "update":
                         $("#node-input-eventId").closest(".form-row").show();
                         $("#node-input-title").closest(".form-row").show();
-                        $("#node-input-description").closest(".form-row").show();
                         $("#node-input-value").closest(".form-row").show();
                         $("#node-input-timestamp").closest(".form-row").show();
                         $("#node-input-start").closest(".form-row").hide();
                         $("#node-input-end").closest(".form-row").hide();
-                        $("#node-input-source").closest(".form-row").show();
                         break;
                     case "delete":
                         $("#node-input-eventId").closest(".form-row").show();
                         $("#node-input-title").closest(".form-row").show();
-                        $("#node-input-description").closest(".form-row").hide();
                         $("#node-input-value").closest(".form-row").hide();
                         $("#node-input-timestamp").closest(".form-row").hide();
                         $("#node-input-start").closest(".form-row").show();
                         $("#node-input-end").closest(".form-row").show();
-                        $("#node-input-source").closest(".form-row").show();
                         break;
                     default:
                         $("#node-input-eventId").closest(".form-row").hide();
                         $("#node-input-title").closest(".form-row").hide();
-                        $("#node-input-description").closest(".form-row").hide();
                         $("#node-input-value").closest(".form-row").hide();
                         $("#node-input-timestamp").closest(".form-row").hide();
                         $("#node-input-start").closest(".form-row").hide();
                         $("#node-input-end").closest(".form-row").hide();
-                        $("#node-input-source").closest(".form-row").hide();
                         break;
                 }
             }
@@ -264,7 +230,7 @@
                         tipText3 = `Other parameters will be overwritten with the new values.`;
                         break;
                     case "delete":
-                        tipText2 = `Deleting an event requires an id or a combination of title, timestamps, and source.`;
+                        tipText2 = `Deleting an event requires an id or a combination of title and timestamps.`;
                         tipText3 = `If multiple events match the criteria, all will be deleted.`;
                         break;
                     default:
@@ -284,18 +250,16 @@
 {
     "title": "My event",
     "start": 1733000000,
-    "end": 1735000000,
-    "source": "node-red"
+    "end": 1735000000
 }`;
                         break;
                     case "create":
                         tipText4 += `
 {
     "title": "My event",
-    "description": "My description",
     "value": 100,
-    "timestamp": 1733000000,
-    "source": "node-red"
+    "start": 1733000000,
+    "end": 1735000000
 }`;
                         break;
                     case "update":
@@ -303,10 +267,8 @@
 {
     "eventId": -1,
     "title": "My event",
-    "description": "My description",
     "value": 100,
-    "timestamp": 1733000000,
-    "source": "node-red"
+    "timestamp": 1733000000
 }`;
                         break;
                     case "delete":
@@ -315,8 +277,7 @@
     "eventId": -1,
     "title": "My event",
     "start": 1733000000,
-    "end": 1735000000,
-    "source": "node-red"
+    "end": 1735000000
 }`;
                         break;
                     default:
@@ -344,9 +305,6 @@
             node.title = $("#node-input-title").typedInput('value');
             node.titleType = $("#node-input-title").typedInput('type');
 
-            node.description = $("#node-input-description").typedInput('value');
-            node.descriptionType = $("#node-input-description").typedInput('type');
-
             node.value = $("#node-input-value").typedInput('value');
             node.valueType = $("#node-input-value").typedInput('type');
 
@@ -358,9 +316,6 @@
 
             node.end = $("#node-input-end").typedInput('value');
             node.endType = $("#node-input-end").typedInput('type');
-
-            node.source = $("#node-input-source").typedInput('value');
-            node.sourceType = $("#node-input-source").typedInput('type');
         }
     });
 </script>
@@ -443,11 +398,6 @@
             <input type="hidden" id="node-input-titleType">
         </div>
         <div class="form-row">
-            <label for="node-input-description"><i class="fa fa-file-text"></i> Description</label>
-            <input type="text" id="node-input-description" placeholder="description">
-            <input type="hidden" id="node-input-descriptionType">
-        </div>
-        <div class="form-row">
             <label for="node-input-value"><i class="fa fa-database"></i> Value</label>
             <input type="text" id="node-input-value" placeholder="value">
             <input type="hidden" id="node-input-valueType">
@@ -458,19 +408,14 @@
             <input type="hidden" id="node-input-timestampType">
         </div>
         <div class="form-row">
-            <label for="node-input-start"><i class="fa fa-clock-o"></i> Min timestamp</label>
+            <label for="node-input-start"><i class="fa fa-clock-o"></i> Start timestamp</label>
             <input type="text" id="node-input-start" placeholder="start">
             <input type="hidden" id="node-input-startType">
         </div>
         <div class="form-row">
-            <label for="node-input-end"><i class="fa fa-clock-o"></i> Max timestamp</label>
+            <label for="node-input-end"><i class="fa fa-clock-o"></i> End timestamp</label>
             <input type="text" id="node-input-end" placeholder="end">
             <input type="hidden" id="node-input-endType">
-        </div>
-        <div class="form-row">
-            <label for="node-input-source"><i class="fa fa-sign-in"></i> Source</label>
-            <input type="text" id="node-input-source" placeholder="source">
-            <input type="hidden" id="node-input-sourceType">
         </div>
 
         <div class="form-tips" id="node-input-tip-text-2"></div>
@@ -506,9 +451,6 @@
         <dt>title <span class="property-type">string</span></dt>
         <dd>Specifies the name of the new or existing event.</dd>
 
-        <dt>description <span class="property-type">string</span></dt>
-        <dd>Specifies the description of the new event.</dd>
-
         <dt>timestamp <span class="property-type">int</span></dt>
         <dd>Specifies the beginning timestamp of the new event.</dd>
 
@@ -517,9 +459,6 @@
 
         <dt>end <span class="property-type">int</span></dt>
         <dd>Specifies the upper limit of a query.</dd>
-
-        <dt>source <span class="property-type">string</span></dt>
-        <dd>Specifies the source of an event.</dd>
     </dl>
 
     <h3>Inputs</h3>
@@ -529,10 +468,8 @@
         <code style="white-space: pre-line;">
             {
                 "title": "My event",
-                "description": "My description",
                 "value": 100,
-                "timestamp": 1733000000,
-                "source": "node-red"
+                "timestamp": 1733000000
             }
         </code>
     </p>
@@ -544,8 +481,7 @@
             {
                 "title": "My event",
                 "start": 1733000000,
-                "end": 1735000000,
-                "source": "node-red"
+                "end": 1735000000
             }
         </code>
     </p>

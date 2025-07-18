@@ -8,6 +8,7 @@
             outputTopic: { value: "" },
             gateType: { value: "and", required: true },
             outputMode: { value: "", validate: function (v) { return ["all", "true", "false"].includes(v); } },
+            formatMode: { value: "passthrough", validate: function (v) { return ["passthrough", "comprehensive"].includes(v); } },
             rules: { value: [{ topic: "", property: "payload", propertyType: "msg", t: "eq", v: "" }] },
         },
         // Define the inputs and outputs of the node
@@ -23,12 +24,14 @@
         // Update form fields
         oneditprepare: function () {
             const node = this;
+            let _controllers = {};
 
             // Populate form with node values
             $('#node-input-name').val(node.name);
             $('#node-input-outputTopic').val(node.outputTopic);
             $('#node-input-gateType').val(node.gateType);
             $('#node-input-outputMode').val(node.outputMode);
+            $('#node-input-formatMode').val(node.formatMode);
 
             // Adding this type for typed input
             const previousValueType = { value: "prev", label: "previous value", hasValue: false };
@@ -52,6 +55,7 @@
             const caseLabel = "ignore case";
 
             // Initialize the form fields
+            queryControllerConfig();
             initializeEditableList();
             populateList();
 
@@ -59,6 +63,20 @@
             $("#mappings-container, #node-input-gateType, #node-input-outputMode").change(function () {
                 updateTipText();
             });
+
+            $("#node-input-formatMode, #node-input-outputMode").change(function () {
+                checkFields();
+            });
+
+            // Query topics defined in read and write nodes
+            function queryControllerConfig() {
+                $.getJSON(`fusebox/controllerNodeConfig`, function (data) {
+                    _controllers = data;
+                }).fail(function () {
+                    console.error("Failed to get topics!");
+                    _controllers = {};
+                });
+            }
 
             // Initialize the EditableList widget
             function initializeEditableList() {
@@ -75,6 +93,16 @@
                          </div>
                          <div style="width: 28px"></div>
                     `)),
+                    buttons: [{
+                        label: "delete all",
+                        icon: "fa fa-trash",
+                        title: "delete all entries",
+                        click: function (e) {
+                            $('#mappings-container').editableList('empty');
+
+                            updateTipText();
+                        }
+                    }],
                     addItem: function (container, i, row) {
                         addRowElements(container, row);
 
@@ -132,12 +160,44 @@
 
             // Format the newly created / intialized row's elements
             function formatRow(elements, row) {
-                elements.topicField.typedInput({ default: 'str', types: ['str'] });
+                elements.topicField.typedInput({
+                    default: 'str',
+                    types: [{
+                        value: "str",
+                        icon: "red/images/typedInput/az.svg",
+                        autoComplete: function (val) {
+                            const term = val.toLowerCase();
+                            const selection = getTopics();
+
+                            return selection
+                                .filter(topic =>
+                                    topic.label.toLowerCase().includes(term) ||
+                                    topic.key.toLowerCase().includes(term))
+                                .map(topic => ({
+                                    value: topic.topic,
+                                    label: topic.label
+                                }));
+                        }
+                    }],
+                });
                 elements.propertyField.typedInput({ default: row.propertyType || 'msg', types: ['msg', 'flow', 'global'] });
                 elements.valueField.typedInput({ default: 'str', types: ['msg', 'flow', 'global', 'str', 'num', previousValueType] });
                 elements.btwnValueField.typedInput({ default: 'num', types: ['msg', 'flow', 'global', 'num', previousValueType] });
                 elements.btwnValue2Field.typedInput({ default: 'num', types: ['msg', 'flow', 'global', 'num', previousValueType] });
                 elements.regexField.typedInput({ default: 're', types: ['re'] });
+            }
+
+            // Return a list of topics from the controller configuration
+            // Structure: [ { key: "ABC", member: 1, topic: test/1, label: ... } ]
+            function getTopics() {
+                const result = []
+                const controllers = _controllers?.controllers || [];
+
+                for (const controller of controllers) {
+                    result.push(...controller.formattedTopics);
+                }
+
+                return result
             }
 
             // Attach events to the row elements
@@ -257,33 +317,47 @@
                 const mode = $('#node-input-outputMode').val();
 
                 const tipText1 = `Using ${rows.length} rows to evaluate boolean logic.`;
-                const tipText3 = mode === "all" ? `The node will always output a message, regardless of the conditions.` : `The node will only output a message if all conditions are ${mode}.`;
+                const tipText3 = mode === "all" ? `The node will always output a message, regardless of the boolean result.` : `The node will only output a message if the boolean result is true.`;
+
                 let tipText2;
 
                 switch (gate) {
                     case "and":
-                        tipText2 = "The node will output true if all conditions are true.";
+                        tipText2 = "Boolean gate AND: true if all conditions are true.";
                         break;
                     case "or":
-                        tipText2 = "The node will output true if at least one condition is true.";
+                        tipText2 = "Boolean gate OR: true if at least one condition is true.";
                         break;
                     case "nand":
-                        tipText2 = "The node will output true if at least one condition is false.";
+                        tipText2 = "Boolean gate NAND: true if at least one condition is false.";
                         break;
                     case "nor":
-                        tipText2 = "The node will output true if all conditions are false.";
+                        tipText2 = "Boolean gate NOR: true if all conditions are false.";
                         break;
                     case "xor":
-                        tipText2 = "The node will output true if only one condition is true.";
+                        tipText2 = "Boolean gate XOR: true if only one condition is true.";
                         break;
                     case "xnor":
-                        tipText2 = "The node will output true if all conditions are the same.";
+                        tipText2 = "Boolean gate XNOR: true if all conditions are the same.";
                         break;
                 }
 
                 $("#node-input-tip-text-1").text(tipText1);
                 $("#node-input-tip-text-2").text(tipText2);
                 $("#node-input-tip-text-3").text(tipText3);
+            }
+
+            // Check the fields, disable or enable them if need be
+            function checkFields() {
+                const mode = $('#node-input-outputMode').val();
+                const format = $('#node-input-formatMode').val();
+
+                if (mode === "all") {
+                    $('#node-input-formatMode').val("comprehensive");
+                    $('#node-input-formatMode').prop('disabled', true);
+                } else {
+                    $('#node-input-formatMode').prop('disabled', false);
+                }
             }
 
             // Iterate over each mapping row and store the elements
@@ -307,6 +381,8 @@
             node.name = $('#node-input-name').val();
             node.outputTopic = $("#node-input-outputTopic").val();
             node.gateType = $('#node-input-gateType').val();
+            node.outputMode = $('#node-input-outputMode').val();
+            node.formatMode = $('#node-input-formatMode').val();
             node.rules = getMappings();
 
             // Iterate over each mapping row and store the values
@@ -484,12 +560,13 @@
             <input type="text" id="node-input-name" placeholder="Name" />
         </div>
         <div class="form-row">
-            <label for="node-input-outputTopic"><i class="fa fa-comment"></i> Topic</label>
+            <label for="node-input-outputTopic"><i class="fa fa-comment"></i> Output topic</label>
             <input type="text" id="node-input-outputTopic" placeholder="Topic" />
         </div>
         <div class="form-row">
-            <label for="node-input-gateType"><i class="fa fa-cog"></i> Type</label>
+            <label for="node-input-gateType"><i class="fa fa-cog"></i> Boolean gate</label>
             <select id="node-input-gateType" name="node-input-gateType">
+                <option value="" disabled>Select gate type...</option>
                 <option value="and">AND</option>
                 <option value="or">OR</option>
                 <option value="nand">NAND</option>
@@ -505,6 +582,14 @@
                 <option value="all">Output data every time</option>
                 <option value="true">Output data only when true</option>
                 <option value="false">Output data only when false</option>
+            </select>
+        </div> 
+        <div class="form-row">
+            <label for="node-input-formatMode"><i class="fa fa-code"></i> Output format</label>
+            <select id="node-input-formatMode">
+                <option value="" disabled selected>Select output format...</option>
+                <option value="passthrough">Passthrough (output original input message)</option>
+                <option value="comprehensive">Comprehensive (output both input message and boolean result)</option>
             </select>
         </div>
 
@@ -532,6 +617,15 @@
         <dt class="optional">topic <span class="property-type">string</span></dt>
         <dd>The topic of the output message to distinguish it from other messages.</dd>
 
+        <dt>gateType <span class="property-type">string</span></dt>
+        <dd>The type of logic gate to use. Options include: <code>and</code>, <code>or</code>, <code>nand</code>, <code>nor</code>, <code>xor</code>, and <code>xnor</code>.</dd>
+
+        <dt>outputMode <span class="property-type">string</span></dt>
+        <dd>Defines the output mode of the node. Options include: <code>all</code> (output data every time), <code>true</code> (output data only when true), and <code>false</code> (output data only when false).</dd>
+
+        <dt>formatMode <span class="property-type">string</span></dt>
+        <dd>Defines the output format of the node. Options include: <code>passthrough</code> (keep input message) and <code>result</code> (output the boolean result).</dd>
+
         <dt>mappings <span class="property-type">object</span></dt>
         <dd>Each row specifies a boolean logic rule. Add a new rule by clicking on the "add" button below the list.</dd>
     </dl>
@@ -557,6 +651,9 @@
     </p>
 
     <h3>Output</h3>
+    <p>In the <code>passthrough</code> format mode, the output message will be exactly the same as the input message.</p>
+    <p>In the <code>result</code> format mode, the output message will only contain the object with the properties seen below:</p>
+
     <dl class="message-properties">
         <dt>payload <span class="property-type">boolean</span></dt>
         <dd><code>true</code> if the logic gate meets all the conditions, <code>false</code> otherwise.</dd>

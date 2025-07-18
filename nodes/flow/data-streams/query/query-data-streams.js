@@ -25,8 +25,13 @@ module.exports = function (RED) {
             return;
         }
 
+        if (!node.controller.filteredServices) {
+            node.status({ fill: "grey", shape: "dot", text: "Loading controller configuration" });
+            return;
+        }
+
         // Initialize global context to get and set values
-        const globalStatesKey = `${node.controller.uniqueId}_states`;
+        const outputContextKey = `${node.controller.uniqueId}_output_states`;
         const globalContext = node.context().global;
 
         // UDP Connection
@@ -38,27 +43,38 @@ module.exports = function (RED) {
 
             server.on("message", (message) => {
                 try {
-                    // node.debug(`Received UDP message: ${message}`);
-
                     const data = JSON.parse(message);
-                    const key = Object.keys(data)[0];
+
+                    // Check message format
+                    if (!data || typeof data !== "object") return;
+
+                    const key = Object.keys(data)?.[0];
+
+                    // Check object format
+                    if (!key || !data[key] || !data[key]?.values) return;
+
                     const obj = {
                         values: data[key].values ?? data[key].v,
                         status: data[key].status ?? data[key].s,
-                        timestamp: data[key].timestamp ?? data[key].t ?? Math.floor(Date.now() / 1000),
+                        timestamp: data[key].timestamp ?? data[key].t ?? Math.floor(Date.now() / 1000)
                     };
 
                     const payload = { [key]: obj };
 
-                    const _dataStreams = globalContext.get(globalStatesKey) || {};
-                    _dataStreams[key] = obj;
+                    // In case of output data streams, save them in the global context
+                    const writableServices = node.controller.writableServices;
 
-                    globalContext.set(globalStatesKey, _dataStreams);
+                    if (writableServices?.[key]) {
+                        const outputContext = globalContext.get(outputContextKey) || {};
+                        outputContext[key] = obj;
+
+                        globalContext.set(outputContextKey, outputContext);
+                    }
 
                     node.status({ fill: "green", shape: "dot", text: `UDP data received (${formatDate()})` });
                     node.send({
                         controller: { id: node.controller.id, uniqueId: node.controller.uniqueId, protocol: node.protocol, host: node.controller.host },
-                        payload: payload,
+                        payload: payload
                     });
                 } catch (error) {
                     node.error(`Failed to parse UDP message: ${error}`, { error });
@@ -91,7 +107,7 @@ module.exports = function (RED) {
                     hostname: node.controller.host,
                     port: node.controller.httpPort,
                     path: path,
-                    method: "GET",
+                    method: "GET"
                 };
 
                 // node.debug(`Querying HTTP: ${JSON.stringify(options)}`);
@@ -106,33 +122,27 @@ module.exports = function (RED) {
                     res.on("end", () => {
                         try {
                             // node.debug(`Received HTTP message: ${data}`);
-
-                            const _dataStreams = globalContext.get(globalStatesKey) || {};
+                            node.status({ fill: "green", shape: "dot", text: `HTTP data received (${formatDate()})` });
 
                             const parsedData = JSON.parse(data);
                             const localhost = Object.keys(parsedData)[0];
-                            const payload = {};
 
                             for (const key in parsedData[localhost]) {
                                 if (parsedData[localhost].hasOwnProperty(key)) {
                                     const obj = {
                                         values: parsedData[localhost][key].v ?? parsedData[localhost][key].values,
                                         status: parsedData[localhost][key].s ?? parsedData[localhost][key].status,
-                                        timestamp: parsedData[localhost][key].t ?? parsedData[localhost][key].timestamp,
+                                        timestamp: parsedData[localhost][key].t ?? parsedData[localhost][key].timestamp
                                     };
 
-                                    _dataStreams[key] = obj;
-                                    payload[key] = obj;
+                                    const payload = { [key]: obj };
+
+                                    node.send({
+                                        controller: { id: node.controller.id, uniqueId: node.controller.uniqueId, protocol: node.protocol, host: node.controller.host },
+                                        payload: payload
+                                    });
                                 }
                             }
-
-                            globalContext.set(globalStatesKey, _dataStreams);
-
-                            node.status({ fill: "green", shape: "dot", text: `HTTP data received (${formatDate()})` });
-                            node.send({
-                                controller: { id: node.controller.id, uniqueId: node.controller.uniqueId, protocol: node.protocol, host: node.controller.host },
-                                payload: payload,
-                            });
                         } catch (error) {
                             node.error("Failed to parse HTTP response", { error });
                             node.error(error);
@@ -175,7 +185,7 @@ module.exports = function (RED) {
                 hour: "2-digit",
                 minute: "2-digit",
                 second: "2-digit",
-                hour12: false, // Use 24-hour format
+                hour12: false // Use 24-hour format
             };
 
             return now.toLocaleString("en-GB", options); // 'en-GB' locale for DD/MM/YYYY format
