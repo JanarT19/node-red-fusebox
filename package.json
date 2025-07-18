@@ -1,6 +1,6 @@
 {
     "name": "@janart19/node-red-fusebox",
-    "version": "0.1.5",
+    "version": "0.1.6",
     "description": "A collection of Fusebox-specific custom nodes for Node-RED",
     "author": "Janar Takis <janar@fusebox.energy>",
     "license": "MIT",
