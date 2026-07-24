@@ -1,9 +1,11 @@
+const ts = require("../../core/lib/timestamp.js");
 // Implementation of an Inverter Control Node for Node-RED
 // This node calculates a new setpoint for the inverter, taking into account grid and inverter limitations.
 module.exports = function (RED) {
     function InverterControlNode(config) {
         RED.nodes.createNode(this, config);
         const node = this;
+        ts.wrapNode(node);
 
         // Configuration
         const outputTopic = config.outputTopic;
@@ -168,7 +170,7 @@ module.exports = function (RED) {
             node.status({
                 fill: node.on_inverter_limit === 0 ? "green" : "yellow",
                 shape: "dot",
-                text: `Output${node.on_inverter_limit === 0 ? "" : " limited"}: ${new_setpoint} (${formatDate()})`
+                text: `Output${node.on_inverter_limit === 0 ? "" : " limited"}: ${new_setpoint} (${ts.formatStatus()})`
             });
 
             return new_setpoint;
@@ -192,23 +194,6 @@ module.exports = function (RED) {
             if (node.print_debug) {
                 node.debug(str);
             }
-        }
-
-        /**
-         * Format the current date and time as DD/MM/YYYY HH:MM:SS
-         */
-        function formatDate() {
-            const now = new Date();
-
-            return now.toLocaleString("en-GB", {
-                day: "2-digit",
-                month: "2-digit",
-                year: "2-digit",
-                hour: "2-digit",
-                minute: "2-digit",
-                second: "2-digit",
-                hour12: false // Use 24-hour format
-            }); // 'en-GB' locale for DD/MM/YYYY format
         }
 
         /**
@@ -253,11 +238,11 @@ module.exports = function (RED) {
                     if (nestedMatchingTopics.length > 0) {
                         setVariables(nestedMatchingTopics, msg.payload);
                     } else {
-                        node.status({ fill: "grey", shape: "dot", text: `Unknown topic (${formatDate()})` });
+                        node.status({ fill: "grey", shape: "dot", text: `Unknown topic (${ts.formatStatus()})` });
                         return null;
                     }
                 } else {
-                    node.status({ fill: "grey", shape: "dot", text: `Unknown topic (${formatDate()})` });
+                    node.status({ fill: "grey", shape: "dot", text: `Unknown topic (${ts.formatStatus()})` });
                     return null;
                 }
             }
@@ -292,7 +277,7 @@ module.exports = function (RED) {
             // Check if a value is missing or invalid
             function isInvalidValue(topic, value) {
                 if (INVALID_VALUES.includes(value)) {
-                    node.status({ fill: "red", shape: "dot", text: `Invalid value for ${topic} (${formatDate()})` });
+                    node.status({ fill: "red", shape: "dot", text: `Invalid value for ${topic} (${ts.formatStatus()})` });
                     return true; // Do not proceed if the value is missing
                 }
 
@@ -323,18 +308,18 @@ module.exports = function (RED) {
             if (requiredValues.some((value) => INVALID_VALUES.includes(value))) {
                 const missingCount = requiredValues.filter((value) => INVALID_VALUES.includes(value)).length;
 
-                node.status({ fill: "yellow", shape: "dot", text: `Waiting for topics: ${missingCount}/2 (${formatDate()})` });
+                node.status({ fill: "yellow", shape: "dot", text: `Waiting for topics: ${missingCount}/2 (${ts.formatStatus()})` });
                 return false;
             }
 
             // Additional check that export limits are negative and import limits are positive
             if ((node.max_grid_export !== null && node.max_grid_export > 0) || (node.max_inverter_export !== null && node.max_inverter_export > 0)) {
-                node.status({ fill: "red", shape: "dot", text: `Export limits must be <= 0 (${formatDate()})` });
+                node.status({ fill: "red", shape: "dot", text: `Export limits must be <= 0 (${ts.formatStatus()})` });
                 return false;
             }
 
             if ((node.max_grid_import !== null && node.max_grid_import < 0) || (node.max_inverter_import !== null && node.max_inverter_import < 0)) {
-                node.status({ fill: "red", shape: "dot", text: `Import limits must be >= 0 (${formatDate()})` });
+                node.status({ fill: "red", shape: "dot", text: `Import limits must be >= 0 (${ts.formatStatus()})` });
                 return false;
             }
 

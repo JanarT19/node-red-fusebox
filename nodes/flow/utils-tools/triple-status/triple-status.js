@@ -1,7 +1,9 @@
+const ts = require("../../core/lib/timestamp.js");
 module.exports = function (RED) {
     function TripleStatusNode(config) {
         RED.nodes.createNode(this, config);
         const node = this;
+        ts.wrapNode(node);
 
         // topics (empty string means disabled)
         node.tItem1 = String(config.tItem1 || config.tSet || "");
@@ -27,7 +29,7 @@ module.exports = function (RED) {
         let vals = ctx.get("vals") || { item1: null, item2: null, item3: null };
 
         function padNum(v, width, prec) {
-            if (v === null || v === undefined) return "—".padStart(width, FIG);
+            if (v === null || v === undefined) return "--".padStart(width, FIG);
             const n = Number(v);
             if (Number.isNaN(n)) return "?".padStart(width, FIG);
             const s = prec >= 0 ? n.toFixed(prec) : String(n);

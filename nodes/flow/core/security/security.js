@@ -1,10 +1,12 @@
 const http = require("http");
+const ts = require("../lib/timestamp.js");
 
 // Custom node to perform CRUD operations via the /calendar endpoint.
 module.exports = function (RED) {
     function SecurityNode(config) {
         RED.nodes.createNode(this, config);
         const node = this;
+        ts.wrapNode(node);
 
         var previousValues = {};
 
@@ -99,7 +101,7 @@ module.exports = function (RED) {
 
             // Skip if a request is already in progress for this row
             if (previousRequest) {
-                node.status({ fill: "yellow", shape: "dot", text: `Request in progress for ${title || "event"} (${formatDate()})` });
+                node.status({ fill: "yellow", shape: "dot", text: `Request in progress for ${title || "event"} (${ts.formatStatus()})` });
                 return;
             }
 
@@ -202,26 +204,26 @@ module.exports = function (RED) {
                                     fill = parsedData.success ? "green" : "red";
                                 }
 
-                                node.status({ fill: fill, shape: "dot", text: `${message} (${formatDate()})` });
+                                node.status({ fill: fill, shape: "dot", text: `${message} (${ts.formatStatus()})` });
 
                                 resolve(parsedData);
                             } else {
                                 if (retries > 0) {
                                     node.warn(`Retrying... (${retries} attempts left)`);
-                                    node.status({ fill: "yellow", shape: "dot", text: `Retrying sending data (${formatDate()})` });
+                                    node.status({ fill: "yellow", shape: "dot", text: `Retrying sending data (${ts.formatStatus()})` });
 
                                     setTimeout(() => {
                                         resolve(sendAuthOperation(node, postData, parameters, retries - 1));
                                     }, 500);
                                 } else {
                                     node.error(`Failed to send data`, parameters);
-                                    node.status({ fill: "red", shape: "dot", text: `Failed to send data (${formatDate()})` });
+                                    node.status({ fill: "red", shape: "dot", text: `Failed to send data (${ts.formatStatus()})` });
 
                                     resolve(false);
                                 }
                             }
                         } catch (error) {
-                            node.status({ fill: "red", shape: "dot", text: `Failed to parse HTTP response (${formatDate()})` });
+                            node.status({ fill: "red", shape: "dot", text: `Failed to parse HTTP response (${ts.formatStatus()})` });
 
                             // Retry if necessary
                             if (retries > 0) {
@@ -239,7 +241,7 @@ module.exports = function (RED) {
                 });
 
                 req.on("error", (error) => {
-                    node.status({ fill: "red", shape: "dot", text: `HTTP request error (${formatDate()})` });
+                    node.status({ fill: "red", shape: "dot", text: `HTTP request error (${ts.formatStatus()})` });
 
                     // Retry if necessary
                     if (retries > 0) {
@@ -284,23 +286,6 @@ module.exports = function (RED) {
             const { title = "_default" } = parameters;
 
             previousValues[title].request = status;
-        }
-
-        // Format the current date and time as DD/MM/YYYY HH:MM:SS
-        function formatDate() {
-            const now = new Date();
-
-            const options = {
-                day: "2-digit",
-                month: "2-digit",
-                year: "2-digit",
-                hour: "2-digit",
-                minute: "2-digit",
-                second: "2-digit",
-                hour12: false // Use 24-hour format
-            };
-
-            return now.toLocaleString("en-GB", options); // 'en-GB' locale for DD/MM/YYYY format
         }
     }
 

@@ -1,5 +1,6 @@
 const dgram = require("dgram");
 const http = require("http");
+const ts = require("../../lib/timestamp.js");
 
 // This custom Node-RED node will establish either a UDP or HTTP connection depending on the protocol selected by the user.
 // The received data will be parsed, formatted, and saved into the global context.
@@ -9,6 +10,7 @@ module.exports = function (RED) {
     function QueryDataStreamsNode(config) {
         RED.nodes.createNode(this, config);
         const node = this;
+        ts.wrapNode(node);
 
         // Retrieve configuration settings
         node.name = config.name;
@@ -32,11 +34,13 @@ module.exports = function (RED) {
 
         // Initialize global context to get and set values
         const outputContextKey = `${node.controller.uniqueId}_output_states`;
+        const inputContextKey = `${node.controller.uniqueId}_input_states`;
         const globalContext = node.context().global;
 
         // UDP Connection
         if (node.protocol === "UDP") {
             const server = dgram.createSocket("udp4");
+            let lastUdpStatusMs = 0;
 
             server.bind(node.controller.udpPort, node.controller.host);
             node.status({ fill: "yellow", shape: "dot", text: "Listening on UDP" });
@@ -61,7 +65,12 @@ module.exports = function (RED) {
 
                     const payload = { [key]: obj };
 
-                    // In case of output data streams, save them in the global context
+                    // Cache every UDP key so read-data-streams can fall back between one-key packets.
+                    const inputContext = globalContext.get(inputContextKey) || {};
+                    inputContext[key] = obj;
+                    globalContext.set(inputContextKey, inputContext);
+
+                    // Writable streams also feed write-node output cache.
                     const writableServices = node.controller.writableServices;
 
                     if (writableServices?.[key]) {
@@ -71,11 +80,16 @@ module.exports = function (RED) {
                         globalContext.set(outputContextKey, outputContext);
                     }
 
-                    node.status({ fill: "green", shape: "dot", text: `UDP data received (${formatDate()})` });
                     node.send({
                         controller: { id: node.controller.id, uniqueId: node.controller.uniqueId, protocol: node.protocol, host: node.controller.host },
                         payload: payload
                     });
+
+                    const nowMs = Date.now();
+                    if (nowMs - lastUdpStatusMs >= 1000) {
+                        lastUdpStatusMs = nowMs;
+                        node.status({ fill: "green", shape: "dot", text: `UDP data received (${ts.formatStatus()})` });
+                    }
                 } catch (error) {
                     node.error(`Failed to parse UDP message: ${error}`, { error });
 
@@ -122,7 +136,7 @@ module.exports = function (RED) {
                     res.on("end", () => {
                         try {
                             // node.debug(`Received HTTP message: ${data}`);
-                            node.status({ fill: "green", shape: "dot", text: `HTTP data received (${formatDate()})` });
+                            node.status({ fill: "green", shape: "dot", text: `HTTP data received (${ts.formatStatus()})` });
 
                             const parsedData = JSON.parse(data);
                             const localhost = Object.keys(parsedData)[0];
@@ -136,6 +150,10 @@ module.exports = function (RED) {
                                     };
 
                                     const payload = { [key]: obj };
+
+                                    const inputContext = globalContext.get(inputContextKey) || {};
+                                    inputContext[key] = obj;
+                                    globalContext.set(inputContextKey, inputContext);
 
                                     node.send({
                                         controller: { id: node.controller.id, uniqueId: node.controller.uniqueId, protocol: node.protocol, host: node.controller.host },
@@ -173,23 +191,6 @@ module.exports = function (RED) {
                 node.status({});
                 done();
             });
-        }
-
-        // Format the current date and time as DD/MM/YYYY HH:MM:SS
-        function formatDate() {
-            const now = new Date();
-
-            const options = {
-                day: "2-digit",
-                month: "2-digit",
-                year: "2-digit",
-                hour: "2-digit",
-                minute: "2-digit",
-                second: "2-digit",
-                hour12: false // Use 24-hour format
-            };
-
-            return now.toLocaleString("en-GB", options); // 'en-GB' locale for DD/MM/YYYY format
         }
     }
 

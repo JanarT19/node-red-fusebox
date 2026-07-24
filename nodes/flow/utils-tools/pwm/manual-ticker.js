@@ -1,3 +1,4 @@
+const ts = require("../../core/lib/timestamp.js");
 // manual-ticker.js
 // Node-RED node: manual-ticker
 // Purpose: Manually send a global tick message with current timestamp and configurable period
@@ -24,15 +25,12 @@ module.exports = function (RED) {
     function ManualTickNode(config) {
         RED.nodes.createNode(this, config);
         const node = this;
+        ts.wrapNode(node);
 
         // ---- CONFIG
         node.name = config.name || "";
         node.topic = config.topic || "heating/tick"; // Output topic
         node.periodSec = Number(config.periodSec ?? 1200); // Period in seconds
-
-        function formatDate() {
-            return new Date().toLocaleString("en-GB", { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
-        }
 
         function setStatus(text, fill) {
             node.status({ fill: fill || "blue", shape: "dot", text });
@@ -47,7 +45,7 @@ module.exports = function (RED) {
             };
 
             node.send({ topic: node.topic, payload });
-            setStatus(`Tick sent at ${formatDate()}`, "green");
+            setStatus(`Tick sent at ${ts.formatStatus()}`, "green");
         }
 
         // Initial status

@@ -58,9 +58,25 @@ module.exports = function (RED) {
             res.status(200).send();
         });
 
+        // Debug endpoint to receive browser-side log messages
+        RED.httpAdmin.post("/fusebox/browser-debug", function (req, res) {
+            const { source, message, level } = req.body || {};
+            const logMsg = `[BROWSER-DEBUG] [${source || "unknown"}] ${message || "no message"}`;
+            if (level === "error") {
+                node.error(logMsg);
+            } else if (level === "warn") {
+                node.warn(logMsg);
+            } else {
+                node.log(logMsg);
+            }
+            res.status(200).send();
+        });
+
         // Define HTTP endpoint to serve the controller node's configuration
         RED.httpAdmin.get("/fusebox/controller-config", function (req, res) {
             const controllerId = req.query.id; // Get the node ID from the query parameters
+
+            node.debug(`[WRITE-DS-DEBUG] GET /fusebox/controller-config called, id=${controllerId}`);
 
             // Get specific controller node or list all available controller nodes
             if (controllerId) {
@@ -90,6 +106,23 @@ module.exports = function (RED) {
                         relatedNodes,
                         formattedTopics
                     } = configNode;
+
+                    // Debug logging for write-data-streams issues
+                    const channelKeys = channels ? Object.keys(channels) : [];
+                    const serviceKeys = services ? Object.keys(services) : [];
+                    const filteredKeys = filteredServices ? Object.keys(filteredServices) : [];
+                    const writableKeys = writableServices ? Object.keys(writableServices) : [];
+                    node.debug(
+                        `[WRITE-DS-DEBUG] Returning config for ${name} (${uniqueId}): channels=${channelKeys.length}, services=${serviceKeys.length}, filteredServices=${filteredKeys.length}, writableServices=${writableKeys.length}`
+                    );
+
+                    if (channelKeys.length === 0) {
+                        node.warn(`[WRITE-DS-DEBUG] WARNING: channels is empty! This will cause empty dropdowns in write-data-streams.`);
+                    }
+                    if (writableKeys.length > 0) {
+                        node.debug(`[WRITE-DS-DEBUG] First 10 writable keys: ${writableKeys.slice(0, 10).join(", ")}`);
+                    }
+
                     res.json({
                         id,
                         name,
@@ -110,6 +143,7 @@ module.exports = function (RED) {
                         formattedTopics
                     });
                 } else {
+                    node.warn(`[WRITE-DS-DEBUG] Controller not found for id=${controllerId}`);
                     res.status(404).json({ error: "Controller not found" });
                 }
             } else {
@@ -270,6 +304,9 @@ module.exports = function (RED) {
                 addOutput(obj, configuredNode.dichannels, "discrete");
             }
 
+            const channelCount = Object.keys(result).length;
+            node.debug(`[WRITE-DS-DEBUG] formatChannels: created ${channelCount} channel entries`);
+
             if (draftNode) {
                 draftNode.channels = result;
             } else {
@@ -305,11 +342,10 @@ module.exports = function (RED) {
             }
         }
 
-        // Only certain services and members are allowed to be written to.
-        // Retrieve the members and descriptions of the allowed services.
-        // Requirements:
-        // 1. all regtype "s" and "s!" members
-        // 2. all chantype "mb" members and (regtype "h", "c", "h!", "c!") and (mbi,mba,regadd existing in output table)
+        // Writable service members -- aligned with write-data-streams.js (iolayer/SQL write rules):
+        // - regtype s, s!, r, h, c → writable
+        // - regtype h!, c! → writable only when _output (AO/DO row linked to this AI/DI member)
+        // AI/DI rows use h/c holds without requiring a paired AO/DO; AO/DO-linked holds use h!/c!
         // Structure: { key: [1, 2, ...] }
         function filterOutputServices(draftNode = null) {
             const configuredNode = draftNode || node;
@@ -319,33 +355,29 @@ module.exports = function (RED) {
 
             const result = {};
 
-            // 1
             for (const key in channels) {
                 const channel = channels[key];
 
-                for (index in channel) {
+                for (const index in channel) {
                     const member = channel[index];
-                    const indexInt = parseInt(index);
-
-                    if (["s", "s!"].includes(member.regtype)) {
-                        result[key] = result[key] || [];
-
-                        if (!result[key].includes(indexInt)) {
-                            result[key].push(indexInt);
-                        }
+                    if (!member || typeof member !== "object" || !member.regtype) {
+                        continue;
                     }
-                }
-            }
+                    const indexInt = parseInt(index, 10);
+                    if (!Number.isFinite(indexInt)) {
+                        continue;
+                    }
 
-            // 2
-            for (const key in channels) {
-                const channel = channels[key];
+                    const regtype = member.regtype;
+                    const hasOutput = member._output === true;
+                    let writable = false;
+                    if (["s", "s!", "r", "h", "c"].includes(regtype)) {
+                        writable = true;
+                    } else if (["h!", "c!"].includes(regtype)) {
+                        writable = hasOutput;
+                    }
 
-                for (index in channel) {
-                    const member = channel[index];
-                    const indexInt = parseInt(index);
-
-                    if (member.chantype === "mb" && ["h", "c", "h!", "c!"].includes(member.regtype) && member._output) {
+                    if (writable) {
                         result[key] = result[key] || [];
 
                         if (!result[key].includes(indexInt)) {
@@ -611,6 +643,8 @@ module.exports = function (RED) {
 
             try {
                 const parsedData = await httpQuery(options);
+                const count = Array.isArray(parsedData) ? parsedData.length : 0;
+                node.debug(`[WRITE-DS-DEBUG] querySqlChannels(${tableName}): got ${count} rows`);
 
                 // Update node property
                 if (draftNode) {
@@ -621,6 +655,7 @@ module.exports = function (RED) {
 
                 return parsedData;
             } catch (error) {
+                node.error(`[WRITE-DS-DEBUG] querySqlChannels(${tableName}) FAILED: ${error}`);
                 console.error(`querySqlChannels (${tableName}) failed:`, error);
             }
         }

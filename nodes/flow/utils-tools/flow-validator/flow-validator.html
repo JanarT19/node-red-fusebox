@@ -96,6 +96,95 @@
                     .map((t) => t.trim())
                     .filter((t) => t);
 
+                // Datastream-specific validation function
+                function validateDatastreams() {
+                    const datastreamTopics = new Set(); // Topics provided by read/write nodes
+                    const requiredTopics = new Map();    // topic -> [nodes that need it]
+
+                    // 1. Collect topics from fusebox-read-data-streams and fusebox-write-data-streams
+                    RED.nodes.eachNode(function (n) {
+                        // Apply tab filters
+                        if (n.z) {
+                            const tab = RED.nodes.workspace(n.z);
+                            if (tab && tab.disabled) return;
+                            const tabName = tab ? tab.label : n.z;
+                            if (includeTabs.length > 0 && !includeTabs.includes(tabName)) return;
+                            if (excludeTabs.length > 0 && excludeTabs.includes(tabName)) return;
+                        }
+
+                        if (n.type === 'fusebox-read-data-streams' || n.type === 'fusebox-write-data-streams') {
+                            // Parse mappings JSON to extract topics
+                            if (n.mappings) {
+                                try {
+                                    const mappings = JSON.parse(n.mappings);
+                                    mappings.forEach(m => {
+                                        if (m.topic) {
+                                            // Add base topic and member topics (e.g., FCTW and FCTW.1, FCTW.2, etc.)
+                                            datastreamTopics.add(m.topic);
+                                            // Also add member variants if they exist
+                                            if (m.member) {
+                                                datastreamTopics.add(`${m.topic}.${m.member}`);
+                                            }
+                                        }
+                                    });
+                                } catch (e) {
+                                    console.warn("Failed to parse mappings for", n.name || n.id, e);
+                                }
+                            }
+                        }
+                    });
+
+                    // 2. Collect required datastream topics from consumer nodes
+                    RED.nodes.eachNode(function (n) {
+                        // Apply tab filters
+                        if (n.z) {
+                            const tab = RED.nodes.workspace(n.z);
+                            if (tab && tab.disabled) return;
+                            const tabName = tab ? tab.label : n.z;
+                            if (includeTabs.length > 0 && !includeTabs.includes(tabName)) return;
+                            if (excludeTabs.length > 0 && excludeTabs.includes(tabName)) return;
+                        }
+
+                        // Check all *Topic and *Topics properties for datastream references
+                        Object.keys(n).forEach(key => {
+                            if (key.endsWith('Topic') || key.endsWith('Topics')) {
+                                const value = n[key];
+                                if (typeof value === 'string' && value.trim()) {
+                                    // Match datastream pattern: uppercase letters/numbers + W + optional .member
+                                    // Examples: TOUV.1, FG3W, FFYW.2, FCTW.1
+                                    if (/^[A-Z0-9]+W(\.\d+)?$/.test(value)) {
+                                        if (!requiredTopics.has(value)) {
+                                            requiredTopics.set(value, []);
+                                        }
+                                        const tab = n.z ? RED.nodes.workspace(n.z) : null;
+                                        const tabName = tab ? tab.label : n.z || "unknown";
+                                        requiredTopics.get(value).push({ node: n, tab: tabName });
+                                    }
+                                }
+                            }
+                        });
+                    });
+
+                    // 3. Check for missing datastreams
+                    const missingDatastreams = [];
+                    requiredTopics.forEach((nodeList, topic) => {
+                        if (!datastreamTopics.has(topic)) {
+                            missingDatastreams.push(`• Datastream '${topic}' required by ${nodeList.length} node(s) but not in any read/write node:`);
+                            // Group by tab for better readability
+                            const byTab = {};
+                            nodeList.forEach(item => {
+                                if (!byTab[item.tab]) byTab[item.tab] = [];
+                                byTab[item.tab].push(item.node.name || item.node.id);
+                            });
+                            Object.keys(byTab).forEach(tabName => {
+                                missingDatastreams.push(`  • [${tabName}]: ${byTab[tabName].join(', ')}`);
+                            });
+                        }
+                    });
+
+                    return missingDatastreams;
+                }
+
                 // Collect all existing tab names
                 const existingTabs = new Set();
                 RED.nodes.eachWorkspace(function (ws) {
@@ -119,6 +208,23 @@
                 if (errors.length > 0) {
                     return { errors, warnings };
                 }
+
+                // Check node names that must not contain spaces or topic-forbidden chars (e.g. room-loop)
+                const nameForbiddenRegex = /[\s#+\x00-\x1F\x7F]/;
+                RED.nodes.eachNode(function (scanNode) {
+                    if (scanNode.z) {
+                        const tab = RED.nodes.workspace(scanNode.z);
+                        if (tab && tab.disabled) return;
+                        const tabName = tab ? tab.label : scanNode.z;
+                        if (includeTabs.length > 0 && !includeTabs.includes(tabName)) return;
+                        if (excludeTabs.length > 0 && excludeTabs.includes(tabName)) return;
+                    }
+                    if (scanNode.type === "fusebox-room-loop" && scanNode.name && nameForbiddenRegex.test(scanNode.name)) {
+                        const tab = scanNode.z ? RED.nodes.workspace(scanNode.z) : null;
+                        const tabName = tab ? tab.label : scanNode.z || "unknown";
+                        errors.push(`• room-loop "${scanNode.name}" (${tabName}): name must not contain spaces, #, +, or control characters. Use e.g. M3 or Kütte_M3.`);
+                    }
+                });
 
                 // Scan all nodes for publishers and listeners - UNIVERSAL APPROACH
                 RED.nodes.eachNode(function (scanNode) {
@@ -226,6 +332,9 @@
                     }
                 });
 
+                // NEW: Datastream-specific validation
+                const missingDatastreams = validateDatastreams();
+
                 // Add warnings in organized format
                 if (unlistenedTopics.length > 0) {
                     warnings.push(`1) Unlistened topics published (${unlistenedTopics.length}):`);
@@ -235,6 +344,11 @@
                 if (unpublishedTopics.length > 0) {
                     warnings.push(`2) Unpublished topics listened (${unpublishedTopics.length}):`);
                     warnings.push(...unpublishedTopics.map((topic) => `    ${topic}`));
+                }
+
+                if (missingDatastreams.length > 0) {
+                    warnings.push(`3) Missing datastream topics (${missingDatastreams.length}):`);
+                    warnings.push(...missingDatastreams.map((msg) => `    ${msg}`));
                 }
 
                 return { errors, warnings };
@@ -336,27 +450,37 @@
 <!-- Define node description -->
 <script type="text/html" data-help-name="fusebox-flow-validator">
     <h3>Universal Flow Validator</h3>
-    <p>Validates any Node-RED flow to ensure proper publisher-listener relationships. Universal and reusable across different installations.</p>
+    <p>Validates any Node-RED flow to ensure proper publisher-listener relationships and datastream topic availability. Universal and reusable across different installations.</p>
 
     <h4>Core Features</h4>
     <ul>
         <li><b>Universal Publisher-Listener Matching:</b> Ensures all topics have both publishers and listeners</li>
+        <li><b>Datastream Validation:</b> Checks that required datastream topics (e.g., TOUV.1, FG3W) are provided by read/write nodes</li>
         <li><b>Automatic Topic Discovery:</b> Scans all node types and extracts topics automatically</li>
         <li><b>Deploy-Time Validation:</b> Runs automatically during flow deployment</li>
         <li><b>Custom Pattern Support:</b> Optional regex patterns for additional validation</li>
+    </ul>
+
+    <h4>Validation Types</h4>
+    <ul>
+        <li><b>1) Publisher-Listener Matching:</b> Detects topics with publishers but no listeners, or vice versa</li>
+        <li><b>2) Datastream Availability:</b> Ensures datastream topics referenced in node configs (like tOutTopic: "TOUV.1") are actually provided by fusebox-read-data-streams or fusebox-write-data-streams nodes</li>
+        <li><b>3) Node Name Validation:</b> Checks room-loop names don't contain forbidden characters</li>
     </ul>
 
     <h4>How It Works</h4>
     <ul>
         <li><b>Publisher Detection:</b> Identifies nodes that publish topics (inject, mqtt out, room-loop, etc.)</li>
         <li><b>Listener Detection:</b> Identifies nodes that listen to topics (mqtt in, floor-loop, function, debug, etc.)</li>
+        <li><b>Datastream Detection:</b> Scans fusebox-read-data-streams and fusebox-write-data-streams mappings for provided topics</li>
         <li><b>Topic Matching:</b> Ensures every published topic has at least one listener</li>
+        <li><b>Datastream Matching:</b> Ensures every required datastream topic is provided by a read/write node</li>
         <li><b>Orphan Detection:</b> Finds topics with publishers but no listeners, or listeners but no publishers</li>
     </ul>
 
     <h4>Universal Application</h4>
     <ul>
-        <li><b>Heating Systems:</b> Validates room-loop → floor-loop topic relationships</li>
+        <li><b>Heating Systems:</b> Validates room-loop → floor-loop topic relationships and datastream availability</li>
         <li><b>MQTT Networks:</b> Ensures MQTT publishers have subscribers</li>
         <li><b>Sensor Networks:</b> Validates sensor data flow</li>
         <li><b>Any Custom System:</b> Works with any Node-RED topic-based architecture</li>
@@ -365,15 +489,22 @@
     <h4>Usage</h4>
     <ol>
         <li>Add this configuration node to your flow</li>
-        <li>Configure validation settings (optional custom patterns)</li>
+        <li>Configure validation settings (optional tab filters)</li>
         <li>Test validation using the "Validate" button</li>
         <li>Deploy flows - validation runs automatically if enabled</li>
     </ol>
 
     <h4>Validation Results</h4>
     <ul>
-        <li><b>Warnings:</b> Topics with mismatched publishers/listeners</li>
-        <li><b>Errors:</b> Invalid custom patterns (if used)</li>
-        <li><b>Success:</b> All topics have proper publisher-listener relationships</li>
+        <li><b>Warnings:</b> Topics with mismatched publishers/listeners, or missing datastream topics</li>
+        <li><b>Errors:</b> Invalid tab filter names or node name validation failures</li>
+        <li><b>Success:</b> All topics have proper publisher-listener relationships and all datastreams are available</li>
+    </ul>
+
+    <h4>Examples of Detected Issues</h4>
+    <ul>
+        <li><b>Missing Datastream:</b> "Datastream 'TOUV.1' required by 12 nodes but not in any read/write node"</li>
+        <li><b>Orphaned Publisher:</b> "Topic 'heating/unused' published by 1 node but has no listeners"</li>
+        <li><b>Missing Publisher:</b> "Topic 'sensor/missing' listened by 3 nodes but has no publishers"</li>
     </ul>
 </script>

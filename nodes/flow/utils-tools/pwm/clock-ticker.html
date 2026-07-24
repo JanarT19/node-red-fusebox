@@ -8,7 +8,7 @@
             periodSec: {
                 value: 1800,
                 validate: function (v) {
-                    return [60, 300, 600, 1200, 1800, 3600].indexOf(Number(v)) >= 0;
+                    return [60, 120, 240, 300, 600, 1200, 1800, 3600].indexOf(Number(v)) >= 0;
                 }
             },
             outputTopic: { value: "heating/tick" }
@@ -111,6 +111,8 @@
             <label for="node-input-periodSec"><i class="fa fa-clock-o"></i> Period (s)</label>
             <select id="node-input-periodSec">
                 <option value="60">60</option>
+                <option value="120">120</option>
+                <option value="240">240</option>
                 <option value="300">300</option>
                 <option value="600">600</option>
                 <option value="1200">1200</option>
@@ -131,5 +133,22 @@
 
 <!-- Define node description -->
 <script type="text/html" data-help-name="fusebox-clock-ticker">
-    <p>Emits a global PWM tick on wall-clock boundaries at the selected period (in seconds). Payload: { ts, periodSec }.</p>
+    <p>Automatic PWM tick source. Emits ticks aligned to local wall-clock boundaries from midnight (e.g. 00:00, 00:30, … for 1800 s).</p>
+
+    <h3>Inputs</h3>
+    <dl class="message-properties">
+        <dt>None</dt>
+        <dd>No input wires. Scheduling starts when the node is deployed.</dd>
+    </dl>
+
+    <h3>Outputs</h3>
+    <dl class="message-properties">
+        <dt>payload <span class="property-type">object</span></dt>
+        <dd><code>{ ts, periodSec }</code> -- <code>ts</code> is the scheduled tick time in Unix seconds; <code>periodSec</code> is the configured period.</dd>
+        <dt>topic <span class="property-type">string</span></dt>
+        <dd>Configured output topic (default <code>heating/tick</code>).</dd>
+    </dl>
+
+    <h3>Details</h3>
+    <p>Runtime accepts periods 60, 300, 600, 1200, 1800, or 3600 seconds; other values fall back to 1800. Status shows the next scheduled tick time. Wire to room-loop / global tick consumers.</p>
 </script>

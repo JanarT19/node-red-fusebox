@@ -1,4 +1,5 @@
 const RuleManager = require("./RuleManager");
+const ts = require("../../core/lib/timestamp.js");
 
 // Boolean logic node
 // Refactored from node-red-contrib-bool-gate: https://flows.nodered.org/node/node-red-contrib-bool-gate
@@ -6,6 +7,7 @@ module.exports = function (RED) {
     function BooleanLogicNode(config) {
         RED.nodes.createNode(this, config);
         const node = this;
+        ts.wrapNode(node);
 
         // Retrieve configuration settings
         node.rules = config.rules || [];
@@ -47,31 +49,14 @@ module.exports = function (RED) {
                         if (!invalidValues.includes(msg.topic)) outMsg.trigger.topic = msg.topic;
                     }
 
-                    node.status({ fill: result ? "green" : "red", shape: "dot", text: `${metadata.validated} of ${metadata.total}, output: ${result} (${formatDate()})` });
+                    node.status({ fill: result ? "green" : "red", shape: "dot", text: `${metadata.validated} of ${metadata.total}, output: ${result} (${ts.formatStatus()})` });
 
                     node.send(outMsg);
                 } else {
-                    node.status({ fill: "grey", shape: "dot", text: `${metadata.validated} of ${metadata.total}, no output (${formatDate()})` });
+                    node.status({ fill: "grey", shape: "dot", text: `${metadata.validated} of ${metadata.total}, no output (${ts.formatStatus()})` });
                 }
             });
         });
-
-        // Format the current date and time as DD/MM/YYYY HH:MM:SS
-        function formatDate() {
-            const now = new Date();
-
-            const options = {
-                day: "2-digit",
-                month: "2-digit",
-                year: "2-digit",
-                hour: "2-digit",
-                minute: "2-digit",
-                second: "2-digit",
-                hour12: false // Use 24-hour format
-            };
-
-            return now.toLocaleString("en-GB", options); // 'en-GB' locale for DD/MM/YYYY format
-        }
     }
 
     RED.nodes.registerType("fusebox-boolean-logic", BooleanLogicNode);

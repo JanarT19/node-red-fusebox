@@ -1,7 +1,9 @@
+const ts = require("../../core/lib/timestamp.js");
 module.exports = function (RED) {
     function FlowValidatorConfigNode(config) {
         RED.nodes.createNode(this, config);
         const node = this;
+        ts.wrapNode(node);
 
         // ---- CONFIG ----
         node.name = config.name;

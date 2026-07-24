@@ -8,11 +8,14 @@
             partner: { value: "" },
             timeout: { value: 1000, validate: (v) => !isNaN(v) && v > 0 },
             responseType: { value: "exact" },
-            tolerance: { value: 0, validate: (v) => !isNaN(v) && v >= 0 }
+            tolerance: { value: 0, validate: (v) => !isNaN(v) && v >= 0 },
+            suppressTimeoutMessage: { value: false },
+            systemLogging: { value: false },
+            triggerOnChangeOnly: { value: false }
         },
         inputs: 1,
         outputs: 1,
-        icon: "timer.svg",
+        icon: "font-awesome/fa-clock-o",
         label: function () {
             return this.name || "measure delay";
         },
@@ -30,9 +33,12 @@
             $("#node-input-timeout").val(node.timeout);
             $("#node-input-responseType").val(node.responseType || "exact");
             $("#node-input-tolerance").val(node.tolerance ?? 0);
+            $("#node-input-suppressTimeoutMessage").prop("checked", !!node.suppressTimeoutMessage);
+            $("#node-input-systemLogging").prop("checked", !!node.systemLogging);
+            $("#node-input-triggerOnChangeOnly").prop("checked", !!node.triggerOnChangeOnly);
 
             // Update tip text when relevant fields change
-            $("#node-input-trigger, #node-input-timeout").on("change keyup", updateTipText);
+            $("#node-input-trigger, #node-input-timeout, #node-input-suppressTimeoutMessage, #node-input-systemLogging, #node-input-triggerOnChangeOnly, #node-input-responseType").on("change keyup", updateTipText);
             $("#node-input-responseType").on("change", updateResponseTypeVisibility);
 
             // Initialize topic dropdown and tip text
@@ -95,17 +101,17 @@
                         element.autocomplete("search", element.val() || "");
                     })
                     .autocomplete("instance")._renderItem = function (ul, item) {
-                    const term = this.term.trim();
-                    const label = item.label;
-                    let highlightedLabel = label;
+                        const term = this.term.trim();
+                        const label = item.label;
+                        let highlightedLabel = label;
 
-                    if (term) {
-                        const regex = new RegExp("(" + term.replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&") + ")", "ig");
-                        highlightedLabel = label.replace(regex, '<strong style="color:#e65; font-weight:bold">$1</strong>');
-                    }
+                        if (term) {
+                            const regex = new RegExp("(" + term.replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&") + ")", "ig");
+                            highlightedLabel = label.replace(regex, '<strong style="color:#e65; font-weight:bold">$1</strong>');
+                        }
 
-                    return $("<li></li>").data("ui-autocomplete-item", item).append(`<div>${highlightedLabel}</div>`).appendTo(ul);
-                };
+                        return $("<li></li>").data("ui-autocomplete-item", item).append(`<div>${highlightedLabel}</div>`).appendTo(ul);
+                    };
             }
 
             // Return a list of topics from the controller configuration
@@ -124,12 +130,28 @@
             // Update tip text based on current settings
             function updateTipText() {
                 const tipText1 = `Starts timer on message with topic "${$("#node-input-trigger").val() || "<trigger>"}".`;
-                const tipText2 = `Waits up to ${$("#node-input-timeout").val() || "<timeout>"} ms for a matching response.`;
-                const tipText3 = `If no response arrives in time, or the value differs, an error is raised.`;
+                const respType = $("#node-input-responseType").val() || "exact";
+                const tipText2 = respType === "any_change"
+                    ? `Waits up to ${$("#node-input-timeout").val() || "<timeout>"} ms for partner change or partner value different from trigger.`
+                    : `Waits up to ${$("#node-input-timeout").val() || "<timeout>"} ms for a matching response.`;
+                const suppressTimeout = $("#node-input-suppressTimeoutMessage").is(":checked");
+                const sysLog = $("#node-input-systemLogging").is(":checked");
+                const trigOnChange = $("#node-input-triggerOnChangeOnly").is(":checked");
+                const tipText3 = suppressTimeout
+                    ? "Timeout events are suppressed; only matches/mismatches are reported."
+                    : "If no response arrives in time, or the value differs, an error is raised.";
+                const tipText4 = sysLog
+                    ? "System logging enabled: emits trigger/response/timeout lines with epoch timestamps."
+                    : "";
+                const tipText5 = trigOnChange
+                    ? "Trigger only on value change enabled: repeated same trigger values are ignored."
+                    : "";
 
                 $("#node-input-tip-text-1").text(tipText1);
                 $("#node-input-tip-text-2").text(tipText2);
                 $("#node-input-tip-text-3").text(tipText3);
+                $("#node-input-tip-text-4").text(tipText4);
+                $("#node-input-tip-text-5").text(tipText5);
             }
         },
         // Save the values from the UI to the node configuration
@@ -142,6 +164,9 @@
             node.timeout = parseInt($("#node-input-timeout").val());
             node.responseType = $("#node-input-responseType").val();
             node.tolerance = parseFloat($("#node-input-tolerance").val()) || 0;
+            node.suppressTimeoutMessage = $("#node-input-suppressTimeoutMessage").is(":checked");
+            node.systemLogging = $("#node-input-systemLogging").is(":checked");
+            node.triggerOnChangeOnly = $("#node-input-triggerOnChangeOnly").is(":checked");
         }
     });
 </script>
@@ -233,8 +258,9 @@
             <select id="node-input-responseType">
                 <option value="exact">Only accept exact value</option>
                 <option value="tolerance">Accept difference within X</option>
+                <option value="any_change">Any change to any change</option>
             </select>
-            <div class="help-text">Choose whether response must equal trigger exactly or accept numeric difference within tolerance.</div>
+            <div class="help-text">Exact/tolerance compare trigger and response values. For switch-to-lamp use exact with trigger DI41W.4 and partner DO41W.4. Any-change accepts partner change since trigger or partner value different from trigger (inverted DO/DI).</div>
         </div>
         <div class="form-row">
             <label for="node-input-tolerance"><i class="fa fa-sliders"></i> Response tolerance</label>
@@ -246,10 +272,27 @@
             <input type="number" id="node-input-timeout" />
             <div class="help-text">Wait before raising a timeout error.</div>
         </div>
+        <div class="form-row">
+            <label for="node-input-suppressTimeoutMessage"><i class="fa fa-bell-slash-o"></i> Suppress timeout message</label>
+            <input type="checkbox" id="node-input-suppressTimeoutMessage" style="width:auto; max-width:none;" />
+            <div class="help-text">When enabled, timeout status/output is suppressed while still waiting for a late matching response.</div>
+        </div>
+        <div class="form-row">
+            <label for="node-input-systemLogging"><i class="fa fa-file-text-o"></i> System logging</label>
+            <input type="checkbox" id="node-input-systemLogging" style="width:auto; max-width:none;" />
+            <div class="help-text">Write detailed events (trigger/response/timeout/mismatch) to Node-RED system log with epoch timestamps.</div>
+        </div>
+        <div class="form-row">
+            <label for="node-input-triggerOnChangeOnly"><i class="fa fa-filter"></i> Trigger only on value change</label>
+            <input type="checkbox" id="node-input-triggerOnChangeOnly" style="width:auto; max-width:none;" />
+            <div class="help-text">Ignore repeated trigger messages with the same value to reduce same-stream noise.</div>
+        </div>
 
         <div class="form-tips" id="node-input-tip-text-1"></div>
         <div class="form-tips" id="node-input-tip-text-2"></div>
         <div class="form-tips" id="node-input-tip-text-3"></div>
+        <div class="form-tips" id="node-input-tip-text-4"></div>
+        <div class="form-tips" id="node-input-tip-text-5"></div>
 
         <br />
     </div>
@@ -257,12 +300,16 @@
 
 <!-- Define node description -->
 <script type="text/html" data-help-name="fusebox-measure-delay">
-    <p><b>measure-delay</b> waits for a second message that repeats the trigger-value.</p>
+    <p><b>measure-delay</b> waits for a second message after the trigger.</p>
 
     <ul>
         <li><b>Trigger topic</b> - first message with this topic arms the timer.</li>
-        <li><b>Response topic</b> - must provide the matching value (blank = any topic).</li>
+        <li><b>Response type</b> - exact, tolerance, or any-change (partner value change only).</li>
+        <li><b>Response topic</b> - partner message topic (blank = any topic).</li>
         <li><b>Timeout</b> - window to wait before raising a timeout error.</li>
+        <li><b>Suppress timeout message</b> - ignore timeout status/output and keep waiting for late response.</li>
+        <li><b>System logging</b> - write detailed events to system log with epoch timestamp for cross-checking external logs.</li>
+        <li><b>Trigger only on value change</b> - ignore repeated same-value triggers to reduce stream republish noise.</li>
     </ul>
 
     <p>Outputs:</p>

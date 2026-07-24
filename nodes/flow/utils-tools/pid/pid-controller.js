@@ -1,9 +1,11 @@
+const ts = require("../../core/lib/timestamp.js");
 // Implementation of a PID Controller Node for Node-RED
 // This node processes incoming messages to control a PID loop based on setpoint and actual values.
 module.exports = function (RED) {
     function PIDControllerNode(config) {
         RED.nodes.createNode(this, config);
         const node = this;
+        ts.wrapNode(node);
 
         // Configuration
         const outputTopic = config.outputTopic;
@@ -61,7 +63,7 @@ module.exports = function (RED) {
                     // Update status to show we're waiting for trigger
                     const validated = validateRequiredValues();
                     if (validated) {
-                        node.status({ fill: "blue", shape: "dot", text: `Ready, waiting for trigger (${formatDate()})` });
+                        node.status({ fill: "blue", shape: "dot", text: `Ready, waiting for trigger (${ts.formatStatus()})` });
                     }
                 } else {
                     // Normal mode - calculate on every input
@@ -151,7 +153,7 @@ module.exports = function (RED) {
 
             output = parseFloat(output.toFixed(2)); // Round to 2 decimal places
 
-            node.status({ fill: "green", shape: "dot", text: `Output: ${output} (${formatDate()})` });
+            node.status({ fill: "green", shape: "dot", text: `Output: ${output} (${ts.formatStatus()})` });
 
             return output;
         }
@@ -165,23 +167,6 @@ module.exports = function (RED) {
          */
         function isObject(obj) {
             return obj !== null && typeof obj === "object" && !Array.isArray(obj);
-        }
-
-        /**
-         * Format the current date and time as DD/MM/YYYY HH:MM:SS
-         */
-        function formatDate() {
-            const now = new Date();
-
-            return now.toLocaleString("en-GB", {
-                day: "2-digit",
-                month: "2-digit",
-                year: "2-digit",
-                hour: "2-digit",
-                minute: "2-digit",
-                second: "2-digit",
-                hour12: false // Use 24-hour format
-            }); // 'en-GB' locale for DD/MM/YYYY format
         }
 
         /**
@@ -226,11 +211,11 @@ module.exports = function (RED) {
                     if (nestedMatchingTopics.length > 0) {
                         setVariables(nestedMatchingTopics, msg.payload);
                     } else {
-                        node.status({ fill: "grey", shape: "dot", text: `Unknown topic (${formatDate()})` });
+                        node.status({ fill: "grey", shape: "dot", text: `Unknown topic (${ts.formatStatus()})` });
                         return null;
                     }
                 } else {
-                    node.status({ fill: "grey", shape: "dot", text: `Unknown topic (${formatDate()})` });
+                    node.status({ fill: "grey", shape: "dot", text: `Unknown topic (${ts.formatStatus()})` });
                     return null;
                 }
             }
@@ -268,7 +253,7 @@ module.exports = function (RED) {
             // Check if a value is missing or invalid
             function isInvalidValue(topic, value) {
                 if (INVALID_VALUES.includes(value)) {
-                    node.status({ fill: "red", shape: "dot", text: `Invalid value for ${topic} (${formatDate()})` });
+                    node.status({ fill: "red", shape: "dot", text: `Invalid value for ${topic} (${ts.formatStatus()})` });
                     return true; // Do not proceed if the value is missing
                 }
 
@@ -299,7 +284,7 @@ module.exports = function (RED) {
             if (requiredValues.some((value) => INVALID_VALUES.includes(value))) {
                 const missingCount = requiredValues.filter((value) => INVALID_VALUES.includes(value)).length;
 
-                node.status({ fill: "yellow", shape: "dot", text: `Waiting for topics: ${missingCount}/7 (${formatDate()})` });
+                node.status({ fill: "yellow", shape: "dot", text: `Waiting for topics: ${missingCount}/7 (${ts.formatStatus()})` });
 
                 return false;
             }

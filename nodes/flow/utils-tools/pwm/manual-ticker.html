@@ -99,3 +99,24 @@
     </div>
     <div class="form-tips" id="node-input-tip-text-2">Period value included in the tick payload.</div>
 </script>
+
+<script type="text/html" data-help-name="fusebox-manual-ticker">
+    <p>Manual PWM tick source. Click the node button in the editor to emit one tick with the current Unix timestamp and configured period. No wired input.</p>
+
+    <h3>Inputs</h3>
+    <dl class="message-properties">
+        <dt>None</dt>
+        <dd>Trigger only via the editor button (HTTP admin inject). Deployed flows do not receive wire inputs.</dd>
+    </dl>
+
+    <h3>Outputs</h3>
+    <dl class="message-properties">
+        <dt>payload <span class="property-type">object</span></dt>
+        <dd><code>{ ts, periodSec }</code> where <code>ts</code> is Unix seconds at send time and <code>periodSec</code> is the configured period.</dd>
+        <dt>topic <span class="property-type">string</span></dt>
+        <dd>Configured output topic (default <code>heating/tick</code>).</dd>
+    </dl>
+
+    <h3>Details</h3>
+    <p>Use for testing room/floor loops without waiting for <b>clock ticker</b>. Downstream nodes that measure period from successive ticks will see elapsed wall time between button presses, not necessarily <code>periodSec</code>; the payload field still carries the configured period for nodes that read it.</p>
+</script>

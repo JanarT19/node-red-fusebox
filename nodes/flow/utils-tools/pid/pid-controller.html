@@ -121,17 +121,17 @@
                         element.autocomplete("search", element.val() || "");
                     })
                     .autocomplete("instance")._renderItem = function (ul, item) {
-                    const term = this.term.trim();
-                    const label = item.label;
-                    let highlightedLabel = label;
+                        const term = this.term.trim();
+                        const label = item.label;
+                        let highlightedLabel = label;
 
-                    if (term) {
-                        const regex = new RegExp("(" + term.replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&") + ")", "ig");
-                        highlightedLabel = label.replace(regex, '<strong style="color:#e65; font-weight:bold">$1</strong>');
-                    }
+                        if (term) {
+                            const regex = new RegExp("(" + term.replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&") + ")", "ig");
+                            highlightedLabel = label.replace(regex, '<strong style="color:#e65; font-weight:bold">$1</strong>');
+                        }
 
-                    return $("<li></li>").data("ui-autocomplete-item", item).append(`<div>${highlightedLabel}</div>`).appendTo(ul);
-                };
+                        return $("<li></li>").data("ui-autocomplete-item", item).append(`<div>${highlightedLabel}</div>`).appendTo(ul);
+                    };
             }
 
             // Return a list of topics from the controller configuration

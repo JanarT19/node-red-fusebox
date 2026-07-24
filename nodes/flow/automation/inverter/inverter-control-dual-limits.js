@@ -1,9 +1,11 @@
+const ts = require("../../core/lib/timestamp.js");
 // Implementation of a Dual Limit Inverter Control Node for Node-RED
 // This node processes incoming messages to control inverter setpoints with dual grid limits.
 module.exports = function (RED) {
     function InverterControlDualLimitsNode(config) {
         RED.nodes.createNode(this, config);
         const node = this;
+        ts.wrapNode(node);
 
         // Configuration
         const outputTopic = config.outputTopic;
@@ -102,7 +104,7 @@ module.exports = function (RED) {
                 node.status({
                     fill: limitStatus ? "yellow" : "green",
                     shape: "dot",
-                    text: `Output${limitStatus ? " limited" : ""}: ${new_setpoint.toFixed(2)} (${formatDate()})`
+                    text: `Output${limitStatus ? " limited" : ""}: ${new_setpoint.toFixed(2)} (${ts.formatStatus()})`
                 });
             } catch (error) {
                 node.error(`Inverter Control Dual Limits error: ${error.message}`, msg);
@@ -259,23 +261,6 @@ module.exports = function (RED) {
         }
 
         /**
-         * Format the current date and time as DD/MM/YYYY HH:MM:SS
-         */
-        function formatDate() {
-            const now = new Date();
-
-            return now.toLocaleString("en-GB", {
-                day: "2-digit",
-                month: "2-digit",
-                year: "2-digit",
-                hour: "2-digit",
-                minute: "2-digit",
-                second: "2-digit",
-                hour12: false // Use 24-hour format
-            }); // 'en-GB' locale for DD/MM/YYYY format
-        }
-
-        /**
          * Create a message with the specified payload, topic, and metadata
          */
         function createMsg(payload, topic = null, metadata = null, originalMsg = {}) {
@@ -317,11 +302,11 @@ module.exports = function (RED) {
                     if (nestedMatchingTopics.length > 0) {
                         setVariables(nestedMatchingTopics, msg.payload);
                     } else {
-                        node.status({ fill: "grey", shape: "dot", text: `Unknown topic (${formatDate()})` });
+                        node.status({ fill: "grey", shape: "dot", text: `Unknown topic (${ts.formatStatus()})` });
                         return null;
                     }
                 } else {
-                    node.status({ fill: "grey", shape: "dot", text: `Unknown topic (${formatDate()})` });
+                    node.status({ fill: "grey", shape: "dot", text: `Unknown topic (${ts.formatStatus()})` });
                     return null;
                 }
             }
@@ -396,7 +381,7 @@ module.exports = function (RED) {
             if (requiredValues.some((value) => INVALID_VALUES.includes(value))) {
                 const missingCount = requiredValues.filter((value) => INVALID_VALUES.includes(value)).length;
 
-                node.status({ fill: "yellow", shape: "dot", text: `Waiting for topics: ${missingCount}/3 (${formatDate()})` });
+                node.status({ fill: "yellow", shape: "dot", text: `Waiting for topics: ${missingCount}/3 (${ts.formatStatus()})` });
                 return false;
             }
 
@@ -406,7 +391,7 @@ module.exports = function (RED) {
                 (node.max_grid_2_export !== null && node.max_grid_2_export > 0) ||
                 (node.max_inverter_export !== null && node.max_inverter_export > 0)
             ) {
-                node.status({ fill: "red", shape: "dot", text: `Export limits must be <= 0 (${formatDate()})` });
+                node.status({ fill: "red", shape: "dot", text: `Export limits must be <= 0 (${ts.formatStatus()})` });
                 return false;
             }
 
@@ -415,7 +400,7 @@ module.exports = function (RED) {
                 (node.max_grid_2_import !== null && node.max_grid_2_import < 0) ||
                 (node.max_inverter_import !== null && node.max_inverter_import < 0)
             ) {
-                node.status({ fill: "red", shape: "dot", text: `Import limits must be >= 0 (${formatDate()})` });
+                node.status({ fill: "red", shape: "dot", text: `Import limits must be >= 0 (${ts.formatStatus()})` });
                 return false;
             }
 

@@ -1,23 +1,21 @@
+const ts = require("../../core/lib/timestamp.js");
 module.exports = function (RED) {
     function AveragerNode(config) {
         RED.nodes.createNode(this, config);
         const node = this;
+        ts.wrapNode(node);
 
         // Configuration
         node.inputTopics = config.inputTopics || [];
         node.outputTopic = config.outputTopic;
-        node.outputMode = config.outputMode || "trigger";
-        node.triggerTopic = config.triggerTopic;
-        node.intervalSec = parseInt(config.intervalSec) || 60;
-        node.minIntervalSec = parseInt(config.minIntervalSec) || 5;
-        node.timeoutSec = parseInt(config.timeoutSec) || 300;
+        node.outputMode = config.outputMode || "any-input";
+        node.selectedInputTopic = (config.selectedInputTopic || "").trim();
         node.minValues = parseInt(config.minValues) || 1;
         node.precision = parseInt(config.precision) || 2;
+        node.enableLogging = config.enableLogging !== false; // Default to true
 
         // State: cache values from input topics
         const cache = {}; // { topic: { value: number, timestamp: Date } }
-        let intervalTimer = null;
-        let lastPublishTime = 0;
 
         // Parse input topics from config
         const topicPatterns = node.inputTopics
@@ -29,7 +27,7 @@ module.exports = function (RED) {
 
         if (topicPatterns.length === 0) {
             node.error("No input topics configured");
-            node.status({ fill: "red", shape: "dot", text: `No input topics (${formatDate()})` });
+            node.status({ fill: "red", shape: "dot", text: `No input topics (${ts.formatStatus()})` });
             return;
         }
 
@@ -53,60 +51,78 @@ module.exports = function (RED) {
 
         // Helper: Calculate average from cache
         function calculateAverage() {
-            const now = Date.now();
             const validEntries = [];
 
             for (const [topic, entry] of Object.entries(cache)) {
-                const age = (now - entry.timestamp) / 1000; // seconds
-                if (age <= node.timeoutSec) {
+                // Any input is valid, no age check
+                if (entry.value !== null && entry.value !== undefined) {
                     validEntries.push(entry.value);
                 }
             }
 
-            if (validEntries.length < node.minValues) {
-                return null;
-            }
+            return {
+                avg: validEntries.length >= node.minValues ? parseFloat((validEntries.reduce((acc, val) => acc + val, 0) / validEntries.length).toFixed(node.precision)) : null,
+                validCount: validEntries.length,
+                totalCount: topicPatterns.length // Total configured inputs, not just cached ones
+            };
+        }
 
-            const sum = validEntries.reduce((acc, val) => acc + val, 0);
-            const avg = sum / validEntries.length;
-            return parseFloat(avg.toFixed(node.precision));
+        // Helper: Update status only (without publishing output)
+        function updateStatusOnly() {
+            const result = calculateAverage();
+
+            if (result.avg === null) {
+                node.status({
+                    fill: "yellow",
+                    shape: "dot",
+                    text: `Waiting: ${result.validCount}/${result.totalCount} valid (${ts.formatStatus()})`
+                });
+            } else {
+                node.status({
+                    fill: "blue",
+                    shape: "dot",
+                    text: `Ready: ${result.validCount}/${result.totalCount} valid → ${result.avg} (waiting for ${node.selectedInputTopic})`
+                });
+            }
         }
 
         // Helper: Publish average to output topic
         function publishAverage() {
-            const avg = calculateAverage();
+            const result = calculateAverage();
 
-            if (avg === null) {
+            if (result.avg === null) {
+                if (node.enableLogging) {
+                    node.log(`[${node.name || "fusebox-averager"}] Insufficient data: ${result.validCount}/${node.minValues} min (${result.totalCount} total)`);
+                }
                 node.status({
                     fill: "yellow",
                     shape: "dot",
-                    text: `Insufficient data: ${Object.keys(cache).length}/${node.minValues} (${formatDate()})`
+                    text: `Insufficient data: ${result.validCount}/${node.minValues} (${ts.formatStatus()})`
                 });
                 return;
             }
 
             const msg = {
                 topic: node.outputTopic,
-                payload: avg
+                payload: result.avg
             };
 
             node.send(msg);
+
+            if (node.enableLogging) {
+                node.log(`[${node.name || "fusebox-averager"}] Average: ${result.avg} (${result.validCount}/${result.totalCount} inputs) -> topic: ${node.outputTopic}`);
+            }
+
             node.status({
                 fill: "green",
                 shape: "dot",
-                text: `${Object.keys(cache).length} topics → ${avg} (${formatDate()})`
+                text: `${result.validCount}/${result.totalCount} valid → ${result.avg} (${ts.formatStatus()})`
             });
         }
 
         // Handle incoming messages
         node.on("input", function (msg) {
             const topic = msg.topic;
-
-            // Check if this is a trigger message
-            if (node.outputMode === "trigger" && topic === node.triggerTopic) {
-                publishAverage();
-                return;
-            }
 
             // Check if topic matches any input pattern
             let matched = false;
@@ -122,69 +138,58 @@ module.exports = function (RED) {
             }
 
             // Update cache
-            const value = parseFloat(msg.payload);
-            if (isNaN(value)) {
-                node.warn(`Invalid numeric value from ${topic}: ${msg.payload}`);
-                return;
-            }
+            // Handle null/undefined/invalid values by removing from cache (so they don't count as valid)
+            const value = msg.payload === null || msg.payload === undefined ? null : parseFloat(msg.payload);
+            if (value === null || isNaN(value)) {
+                // Remove from cache (or mark as invalid) so it doesn't count toward valid entries
+                if (cache[topic]) {
+                    delete cache[topic];
+                }
+                // Log if it's actually a problem (not just null/undefined) and logging enabled
+                if (node.enableLogging && msg.payload !== null && msg.payload !== undefined) {
+                    node.log(`[${node.name || "fusebox-averager"}] Invalid numeric value from ${topic}: ${msg.payload}`);
+                }
+            } else {
+                // Valid value - update cache
+                cache[topic] = {
+                    value: value,
+                    timestamp: Date.now()
+                };
 
-            cache[topic] = {
-                value: value,
-                timestamp: Date.now()
-            };
-
-            // Handle output based on mode
-            if (node.outputMode === "ratelimit") {
-                const now = Date.now();
-                const timeSinceLastPublish = (now - lastPublishTime) / 1000;
-
-                if (timeSinceLastPublish >= node.minIntervalSec) {
-                    publishAverage();
-                    lastPublishTime = now;
+                // Log value update if logging enabled
+                if (node.enableLogging) {
+                    node.log(`[${node.name || "fusebox-averager"}] Value update: ${topic}=${value}`);
                 }
             }
-            // For 'trigger' mode, do nothing here (wait for trigger)
-            // For 'interval' mode, do nothing here (timer handles it)
-        });
 
-        // Set up interval timer if needed
-        if (node.outputMode === "interval") {
-            intervalTimer = setInterval(() => {
+            // Handle output based on mode
+            // Output even if this value was null - we might still have enough valid values
+            if (node.outputMode === "any-input") {
+                // Output on any input update
                 publishAverage();
-            }, node.intervalSec * 1000);
-        }
+            } else if (node.outputMode === "selected-input") {
+                // Output only when selected input topic updates
+                if (topic === node.selectedInputTopic) {
+                    publishAverage();
+                } else {
+                    // Update status even if not the selected topic (to show current state)
+                    updateStatusOnly();
+                }
+            }
+        });
 
         // Cleanup on node close
         node.on("close", function () {
-            if (intervalTimer) {
-                clearInterval(intervalTimer);
-                intervalTimer = null;
-            }
+            // No timers to clean up
         });
 
         // Initial status
+        const modeText = node.outputMode === "selected-input" && node.selectedInputTopic ? `${node.outputMode} (${node.selectedInputTopic})` : node.outputMode;
         node.status({
             fill: "grey",
             shape: "dot",
-            text: `Waiting: ${topicPatterns.length} patterns, mode: ${node.outputMode} (${formatDate()})`
+            text: `Waiting: ${topicPatterns.length} patterns, mode: ${modeText} (${ts.formatStatus()})`
         });
-
-        // Format the current date and time as DD/MM/YYYY HH:MM:SS
-        function formatDate() {
-            const now = new Date();
-
-            const options = {
-                day: "2-digit",
-                month: "2-digit",
-                year: "2-digit",
-                hour: "2-digit",
-                minute: "2-digit",
-                second: "2-digit",
-                hour12: false // Use 24-hour format
-            };
-
-            return now.toLocaleString("en-GB", options); // 'en-GB' locale for DD/MM/YYYY format
-        }
     }
 
     RED.nodes.registerType("fusebox-averager", AveragerNode);

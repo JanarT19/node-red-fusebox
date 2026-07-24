@@ -1,6 +1,6 @@
 {
     "name": "@janart19/node-red-fusebox",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "description": "A comprehensive collection of custom nodes for interfacing with Fusebox automation controllers - data streams, energy management, and utilities",
     "author": "Janar Takis <janar@fusebox.energy>",
     "license": "MIT",
@@ -21,7 +21,8 @@
         "node": ">=16"
     },
     "dependencies": {
-        "node-fetch": "^3.3.2"
+        "node-fetch": "^3.3.2",
+        "js-yaml": "^4.1.0"
     },
     "node-red": {
         "version": ">=4.0.0",
@@ -36,14 +37,18 @@
             "fusebox-inverter-control": "nodes/flow/automation/inverter/inverter-control.js",
             "fusebox-inverter-control-dual-limits": "nodes/flow/automation/inverter/inverter-control-dual-limits.js",
             "fusebox-averager": "nodes/flow/utils-tools/averager/averager.js",
+            "fusebox-averager-gated": "nodes/flow/utils-tools/averager/averager-gated.js",
+            "fusebox-arithmetics": "nodes/flow/utils-tools/arithmetics/arithmetics.js",
             "fusebox-boolean-logic": "nodes/flow/utils-tools/boolean/boolean-logic.js",
+            "fusebox-comparator": "nodes/flow/utils-tools/comparator/comparator.js",
             "fusebox-flow-analyzer": "nodes/flow/utils-tools/flow-analyzer/flow-analyzer.js",
             "fusebox-flow-validator": "nodes/flow/utils-tools/flow-validator/flow-validator.js",
             "fusebox-measure-delay": "nodes/flow/utils-tools/measure-delay/measure-delay.js",
             "fusebox-pid-controller": "nodes/flow/utils-tools/pid/pid-controller.js",
             "fusebox-clock-ticker": "nodes/flow/utils-tools/pwm/clock-ticker.js",
             "fusebox-manual-ticker": "nodes/flow/utils-tools/pwm/manual-ticker.js",
-            "fusebox-triple-status": "nodes/flow/utils-tools/triple-status/triple-status.js"
+            "fusebox-triple-status": "nodes/flow/utils-tools/triple-status/triple-status.js",
+            "fusebox-value-converter": "nodes/flow/utils-tools/value-converter/value-converter.js"
         }
     }
 }

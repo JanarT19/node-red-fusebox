@@ -8,6 +8,7 @@
             outputMode: { value: "", validate: (v) => ["all", "change"].includes(v) },
             msgType: { value: "", validate: (v) => ["separate", "together", "split"].includes(v) },
             mappings: { value: [] }, // Store multiple mappings
+            debugTopics: { value: "" }, // Comma-separated topic prefixes to log (empty = off)
             outputs: { value: 1 } // Node output ports
         },
         // Define the inputs of the node
@@ -26,6 +27,12 @@
             const node = this;
             let _controller = {};
             let _lastControllerId = null;
+            const loadingSelector = "#read-ds-loading";
+            const mappingsSelector = "#mappings-container";
+            const mappingsOverlaySelector = "#read-ds-mappings-overlay";
+            let loadingStartedAt = 0;
+            let loadingHideTimer = null;
+            const MIN_LOADING_VISIBLE_MS = 450;
 
             // Load existing mappings or initialize an empty array
             const mappings = node.mappings || [];
@@ -35,6 +42,41 @@
             $("#node-input-controller").val(node.controller);
             $("#node-input-msgType").val(node.msgType);
             $("#node-input-outputMode").val(node.outputMode);
+            $("#node-input-debugTopics").val(node.debugTopics || "");
+
+            function setLoadingState(isLoading, text) {
+                const $loading = $(loadingSelector);
+                const $mappings = $(mappingsSelector);
+                const $overlay = $(mappingsOverlaySelector);
+                if (!$loading.length || !$mappings.length || !$overlay.length) return;
+                if (isLoading) {
+                    if (loadingHideTimer) {
+                        clearTimeout(loadingHideTimer);
+                        loadingHideTimer = null;
+                    }
+                    loadingStartedAt = Date.now();
+                    $loading.find(".read-ds-loading-text").text(text || "Loading...");
+                    $loading.show();
+                    $mappings.addClass("read-ds-loading-dim");
+                    $overlay.show();
+                } else {
+                    const elapsed = Date.now() - loadingStartedAt;
+                    const delay = Math.max(0, MIN_LOADING_VISIBLE_MS - elapsed);
+                    const hideNow = () => {
+                        $loading.hide();
+                        $mappings.removeClass("read-ds-loading-dim");
+                        $overlay.hide();
+                    };
+                    if (delay > 0) {
+                        loadingHideTimer = setTimeout(() => {
+                            loadingHideTimer = null;
+                            hideNow();
+                        }, delay);
+                    } else {
+                        hideNow();
+                    }
+                }
+            }
 
             // Load controller data
             $("#node-input-controller").change(queryControllerConfig);
@@ -60,9 +102,20 @@
                 if (_lastControllerId === controllerId) return;
                 _lastControllerId = controllerId;
 
+                if (!controllerId) {
+                    setLoadingState(false);
+                    $("#mappings-container").editableList("empty");
+                    $("#mappings-container").editableList("addItems", mappings);
+                    updateTipText();
+                    return;
+                }
+
+                setLoadingState(true, "Loading controller config...");
+
                 $.getJSON(`fusebox/controller-config?id=${controllerId}`)
                     .done((d) => {
                         _controller = d;
+                        node._controllerCache = d; // Store for access in oneditsave
                     })
                     .fail(() => {
                         console.error("Failed to query controller configuration!");
@@ -74,13 +127,18 @@
                         $("#mappings-container").editableList("addItems", mappings);
                         updateTipText();
                         setTimeout(() => {
-                            triggerSort();
-                            refreshAllPlusButtons();
+                            try {
+                                triggerSort();
+                                refreshAllPlusButtons();
+                            } finally {
+                                // Hide loading only after expensive list refresh work completes.
+                                requestAnimationFrame(() => setLoadingState(false));
+                            }
                         }, 200);
                     });
             }
 
-            let currentSortColumn = "datastream";
+            let currentSortColumn = "topic";
 
             function initializeEditableList() {
                 $("#mappings-container").editableList({
@@ -92,14 +150,14 @@
                         <div class="read-data-streams-list" style="text-align:center;white-space:normal;flex:1">
                             <div class="checkbox-container">Manual entry</div>
                             <div class="node-input-keyNameManual" id="sort-header-datastream" style="cursor:pointer;user-select:none;">
-                                Data stream name <span class="sort-triangle" id="sort-triangle-datastream">▲</span>
+                                Data stream name <span class="sort-triangle" id="sort-triangle-datastream">&#9650;</span>
                             </div>
                             <div class="node-input-dataType">Data type</div>
                             <div class="node-input-index">Member index</div>
                             <div class="node-input-coefficient">Coefficient</div>
                             <span class="node-input-arrow">&nbsp;&nbsp;</span>
                             <div class="node-input-topic" id="sort-header-topic" style="cursor:pointer;user-select:none;">
-                                Topic <span class="sort-triangle" id="sort-triangle-topic">▲</span>
+                                Topic <span class="sort-triangle" id="sort-triangle-topic">&#9650;</span>
                             </div>
                             <div class="row-actions"></div>
                         </div>
@@ -155,24 +213,28 @@
 
                 setTimeout(function () {
                     $("#sort-header-datastream").on("click", function () {
-                        if (currentSortColumn !== "datastream") {
-                            currentSortColumn = "datastream";
-                            updateSortIndicators();
-                            triggerSort();
-                        }
+                        currentSortColumn = "datastream";
+                        updateSortIndicators();
+                        triggerSort();
                     });
 
                     $("#sort-header-topic").on("click", function () {
-                        if (currentSortColumn !== "topic") {
-                            currentSortColumn = "topic";
-                            updateSortIndicators();
-                            triggerSort();
-                        }
+                        currentSortColumn = "topic";
+                        updateSortIndicators();
+                        triggerSort();
                     });
 
                     updateSortIndicators();
                     triggerSort();
                 }, 100);
+            }
+
+            const initialControllerId = $("#node-input-controller").val();
+            if (initialControllerId) {
+                setLoadingState(true, "Loading controller config...");
+                queryControllerConfig();
+            } else {
+                setLoadingState(false);
             }
 
             function updateSortIndicators() {
@@ -181,41 +243,56 @@
             }
 
             function triggerSort() {
-                const items = $("#mappings-container").editableList("items");
-                const data = [];
-                items.each(function () {
-                    const c = $(this),
-                        e = getRowElements(c);
+                const $items = $("#mappings-container").editableList("items");
+                if ($items.length === 0) return;
 
-                    data.push({
-                        manual: e.manualElement.is(":checked"),
-                        keyNameSelect: e.keySelectElement.val(),
-                        keyNameManual: e.keyManualElement.val(),
-                        dataType: e.dataTypeElement.val(),
-                        index: parseInt(e.indexElement.val()) || 0,
-                        coefficient: parseFloat(e.coefficientElement.val()) || 1,
-                        topic: e.topicElement.val()
-                    });
+                const sortedItems = [];
+                const incompleteItems = [];
+
+                $items.each(function () {
+                    const container = $(this);
+                    const $li = container.closest("li");
+                    const e = getRowElements(container);
+
+                    const manual = e.manualElement.is(":checked");
+                    const key = manual ? e.keyManualElement.val() : e.keySelectElement.val();
+                    const idx = parseInt(e.indexElement.val()) || 0;
+                    const topic = e.topicElement.val();
+
+                    // Build stable fallbacks so freshly-added rows sort correctly
+                    const normKey = key || (topic && topic.includes(".") ? topic.split(".")[0] : "");
+                    const normIdx = (idx > 0)
+                        ? idx
+                        : (topic && topic.includes(".") ? parseInt(topic.split(".")[1], 10) : 0);
+                    const normTopic = topic || (normKey && normIdx ? `${normKey}.${normIdx}` : "");
+
+                    const entry = { $li, key: normKey, index: normIdx || 0, topic: normTopic };
+
+                    if (!normTopic || !normKey) {
+                        incompleteItems.push(entry);
+                    } else {
+                        sortedItems.push(entry);
+                    }
                 });
 
-                data.sort((a, b) => {
+                sortedItems.sort((a, b) => {
                     let cmp = 0;
                     if (currentSortColumn === "datastream") {
-                        const an = (a.manual ? a.keyNameManual : a.keyNameSelect) || "";
-                        const bn = (b.manual ? b.keyNameManual : b.keyNameSelect) || "";
-                        cmp = an.toLowerCase().localeCompare(bn.toLowerCase());
+                        cmp = a.key.toLowerCase().localeCompare(b.key.toLowerCase());
                     } else {
                         cmp = (a.topic || "").toLowerCase().localeCompare((b.topic || "").toLowerCase());
                     }
-
                     if (cmp === 0) cmp = a.index - b.index;
-
                     return cmp;
                 });
 
-                $("#mappings-container").editableList("empty");
-                $("#mappings-container").editableList("addItems", data);
-                refreshAllPlusButtons();
+                // Reorder DOM in-place -- avoids triggering addItem callbacks (no autocomplete re-init).
+                // Plus buttons travel with their rows so no refresh needed after a reorder.
+                const allItems = sortedItems.concat(incompleteItems);
+                if (allItems.length === 0) return;
+                const $listContainer = allItems[0].$li.parent();
+                allItems.forEach(entry => $listContainer.append(entry.$li));
+                try { $listContainer.sortable("refreshPositions"); } catch (e) { }
             }
 
             function initializeAutocomplete(element, onSelect) {
@@ -238,15 +315,15 @@
                         element.autocomplete("search", element.val() || "");
                     })
                     .autocomplete("instance")._renderItem = function (ul, item) {
-                    const term = this.term.trim();
-                    const lab = term
-                        ? item.label.replace(
-                              new RegExp("(" + term.replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&") + ")", "ig"),
-                              '<strong style="color:#e65;font-weight:bold">$1</strong>'
-                          )
-                        : item.label;
-                    return $("<li></li>").data("ui-autocomplete-item", item).append(`<div>${lab}</div>`).appendTo(ul);
-                };
+                        const term = this.term.trim();
+                        const lab = term
+                            ? item.label.replace(
+                                new RegExp("(" + term.replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&") + ")", "ig"),
+                                '<strong style="color:#e65;font-weight:bold">$1</strong>'
+                            )
+                            : item.label;
+                        return $("<li></li>").data("ui-autocomplete-item", item).append(`<div>${lab}</div>`).appendTo(ul);
+                    };
             }
 
             // Return a list of topics from the controller configuration
@@ -296,6 +373,10 @@
 
                 return fs?.[key] && Number.isInteger(m) && m >= 1 && m <= 16;
             }
+            function sanitizeServiceKey(rawKey) {
+                if (rawKey == null) return "";
+                return String(rawKey).trim().replace(/\.\d+$/, "");
+            }
 
             // Append the row to the container
             function addRowElements(container, row) {
@@ -322,7 +403,7 @@
                 container.append(rowHtml);
             }
 
-            function refreshPlusButtonFor(container) {
+            function refreshPlusButtonFor(container, usedByKey) {
                 // remove any existing
                 container.find(".add-member-dropdown").remove();
 
@@ -333,28 +414,13 @@
                 if (manual || !key || !Number.isInteger(idx)) return;
 
                 // Get all members for this datastream
-                const allUsedForThisKey = getUsedIndicesForDataStream(key);
+                const allUsedForThisKey = usedByKey?.[key] ?? getUsedIndicesForDataStream(key);
                 const allAvailableForThisKey = _controller?.channels?.[key]
                     ? Object.values(_controller.channels[key])
-                          .map((m) => parseInt(m.member, 10))
-                          .sort((a, b) => a - b)
+                        .map((m) => parseInt(m.member, 10))
+                        .sort((a, b) => a - b)
                     : [];
                 const missingForThisKey = allAvailableForThisKey.filter((i) => !allUsedForThisKey.includes(i));
-
-                console.log(`DEBUG: ${key}.${idx} - Calculating missing members:`, {
-                    allUsedForThisKey: allUsedForThisKey,
-                    allAvailableForThisKey: allAvailableForThisKey,
-                    missingForThisKey: missingForThisKey,
-                    missingCount: missingForThisKey.length,
-                    // Detailed comparison
-                    usedDetails: allUsedForThisKey.map((i) => ({ value: i, type: typeof i })),
-                    availableDetails: allAvailableForThisKey.map((i) => ({ value: i, type: typeof i })),
-                    filterTest: allAvailableForThisKey.map((i) => ({
-                        value: i,
-                        includes: allUsedForThisKey.includes(i),
-                        strictEquals: allUsedForThisKey.some((used) => used === i)
-                    }))
-                });
 
                 if (missingForThisKey.length === 0) return; // All members added, no plus button needed
 
@@ -365,13 +431,6 @@
                 // Find the next missing member after the current index
                 const nextMissingIndex = missingForThisKey.find((i) => i > idx);
                 if (!nextMissingIndex) return; // No next member available
-
-                console.log(`Creating dropdown for ${key}.${idx} (last member):`, {
-                    missingForThisKey: missingForThisKey,
-                    nextMissingIndex: nextMissingIndex,
-                    allUsedForThisKey: allUsedForThisKey,
-                    maxUsedIndex: maxUsedIndex
-                });
 
                 // Create dropdown for member selection
                 let dropdownHtml = '<select class="add-member-dropdown" title="Add members for ' + key + '">';
@@ -403,13 +462,6 @@
                         const availableMembers = findAvailableMembers(key, idx);
                         const allMissingMembers = missingForThisKey.map((index) => availableMembers.find((m) => m.index === index)).filter((m) => m); // Remove undefined entries
 
-                        console.log(`DEBUG: Adding all missing members for ${key}:`, {
-                            missingForThisKey: missingForThisKey,
-                            availableMembers: availableMembers,
-                            allMissingMembers: allMissingMembers,
-                            allMissingMembersCount: allMissingMembers.length
-                        });
-
                         addAllMissingMembers(container, { keyNameSelect: key, dataType: el.dataTypeElement.val() }, allMissingMembers);
                     }
                     $(this).val(""); // Reset dropdown
@@ -417,11 +469,29 @@
             }
 
             function refreshAllPlusButtons() {
-                $("#mappings-container")
-                    .editableList("items")
-                    .each(function () {
-                        refreshPlusButtonFor($(this));
-                    });
+                const $items = $("#mappings-container").editableList("items");
+
+                // Pre-compute used indices per key once so refreshPlusButtonFor
+                // doesn't have to walk all rows again for each row (avoids O(N2)).
+                const usedByKey = {};
+                $items.each(function () {
+                    const c = $(this);
+                    const el = getRowElements(c);
+                    const manual = el.manualElement.is(":checked");
+                    const key = manual ? el.keyManualElement.val() : el.keySelectElement.val();
+                    const idx = parseInt(el.indexElement.val(), 10);
+                    if (key && Number.isInteger(idx) && idx > 0) {
+                        if (!usedByKey[key]) usedByKey[key] = [];
+                        usedByKey[key].push(idx);
+                    }
+                });
+                Object.keys(usedByKey).forEach(k => {
+                    usedByKey[k] = [...new Set(usedByKey[k])].sort((a, b) => a - b);
+                });
+
+                $items.each(function () {
+                    refreshPlusButtonFor($(this), usedByKey);
+                });
             }
 
             function findAvailableMembers(keyNameSelect, currentIndex) {
@@ -502,13 +572,6 @@
                 const currentlyUsed = getUsedIndicesForDataStream(key);
                 const actuallyMissing = availableMembers.filter((member) => !currentlyUsed.includes(member.index));
 
-                console.log(`DEBUG: addAllMissingMembers for ${key}:`, {
-                    availableMembers: availableMembers,
-                    currentlyUsed: currentlyUsed,
-                    actuallyMissing: actuallyMissing,
-                    actuallyMissingCount: actuallyMissing.length
-                });
-
                 if (actuallyMissing.length === 0) {
                     RED.notify(`All members for ${key} are already added`, { type: "warning", timeout: 3000 });
                     return;
@@ -523,11 +586,6 @@
                     coefficient: svc.conv_coef || 1,
                     topic: `${key}.${member.index}`
                 }));
-
-                console.log(
-                    `Adding ${newRows.length} missing members for ${key}:`,
-                    newRows.map((r) => r.topic)
-                );
 
                 $("#mappings-container").editableList("addItems", newRows);
                 defineOutputPorts();
@@ -553,19 +611,44 @@
                 };
             }
 
+            function resolveRowServiceKey(row) {
+                let key = sanitizeServiceKey(row?.keyNameSelect || row?.keyNameManual || "");
+                if (!key && row?.topic) {
+                    const parts = String(row.topic).trim().split(".");
+                    if (parts.length >= 2) {
+                        key = sanitizeServiceKey(parts[0]);
+                    }
+                }
+                return key;
+            }
+
             // Format the newly created / intialized row's elements
             function formatRow(e, row) {
                 const fs = _controller.filteredServices || {};
+                const allServices = _controller.services || {};
                 const keyNames = sortKeysByServiceNames(fs);
 
                 const sel = e.keySelectElement;
-                const selectedKey = row.keyNameSelect;
+                const selectedKey = resolveRowServiceKey(row);
 
                 sel.empty().append($(`<option value="">Select data stream...</option>`));
                 keyNames.forEach((key) => {
-                    const name = fs[key]?.servicename || "???";
-                    sel.append($(`<option value="${key}" ${selectedKey === key ? "selected" : ""}>${name} (${key})</option>`));
+                    const name = fs[key]?.servicename || allServices[key]?.servicename || "???";
+                    sel.append($(`<option value="${key}">${name} (${key})</option>`));
                 });
+                sel.removeClass("read-ds-missing-key").removeAttr("title");
+                if (selectedKey) {
+                    if (!fs[selectedKey]) {
+                        const name = allServices[selectedKey]?.servicename || selectedKey;
+                        sel.append($(`<option value="${selectedKey}">${name} (${selectedKey}) (not in sync list)</option>`));
+                        sel.addClass("read-ds-missing-key");
+                        sel.attr(
+                            "title",
+                            `Saved key '${selectedKey}' is not in controller filteredServices (needs /services and /allstates). Runtime may still work.`
+                        );
+                    }
+                    sel.val(selectedKey);
+                }
 
                 updateKeySelect(e);
                 validateKeyName(e);
@@ -581,6 +664,13 @@
             // Attach events to the row elements
             function attachRowEvents(e, container) {
                 e.manualElement.on("change", function () {
+                    const isManual = e.manualElement.is(":checked");
+
+                    // Warn when enabling manual mode
+                    if (isManual) {
+                        RED.notify("Manual entry: coefficient and other settings will override controller configuration", { type: "warning", timeout: 4000 });
+                    }
+
                     updateKeySelect(e);
                     validateKeyName(e);
                     populateIndex(e);
@@ -603,10 +693,18 @@
                 });
 
                 e.keyManualElement.on("change input", function () {
+                    const raw = e.keyManualElement.val();
+                    const sanitized = sanitizeServiceKey(raw);
+                    if (raw !== sanitized) {
+                        e.keyManualElement.val(sanitized);
+                    }
+                    validateKeyName(e);
                     populateIndex(e);
                     validateIndex(e);
                     updateCoefficient(e);
                     validateCoefficient(e);
+                    updateTopic(e);
+                    validateTopic(e);
                     refreshPlusButtonFor(container);
                 });
 
@@ -740,7 +838,7 @@
                 const manual = e.manualElement.is(":checked");
                 const keyManual = e.keyManualElement.val();
                 const keySelect = e.keySelectElement.val();
-                const key = manual ? keyManual : keySelect;
+                const key = sanitizeServiceKey(manual ? keyManual : keySelect);
                 const idx = e.indexElement.val();
                 const t = e.topicElement.val();
 
@@ -771,17 +869,21 @@
             function validateKeyName(e) {
                 const manual = e.manualElement.is(":checked");
                 const ks = e.keySelectElement.val();
-                const km = e.keyManualElement.val();
+                const km = sanitizeServiceKey(e.keyManualElement.val());
                 const invalid = ["", undefined, null];
                 let ok;
 
                 if (manual) {
-                    ok = !invalid.includes(km);
+                    ok = !invalid.includes(km) && !km.includes(".");
                     e.keyManualElement.css("border-color", ok ? "" : "red");
                     e.keySelectElement.css("border-color", "");
                 } else {
                     ok = !invalid.includes(ks);
-                    e.keySelectElement.css("border-color", ok ? "" : "red");
+                    if (ok && e.keySelectElement.hasClass("read-ds-missing-key")) {
+                        e.keySelectElement.css("border-color", "#ff9800");
+                    } else {
+                        e.keySelectElement.css("border-color", ok ? "" : "red");
+                    }
                     e.keyManualElement.css("border-color", "");
                 }
             }
@@ -901,28 +1003,79 @@
         },
 
         oneditsave: function () {
+            const sanitizeServiceKey = (rawKey) => {
+                if (rawKey == null) return "";
+                return String(rawKey).trim().replace(/\.\d+$/, "");
+            };
+            const topicLooksServiceTopic = (topic, key) => {
+                if (!topic || !key) return false;
+                const t = String(topic).trim();
+                return t === key || t.startsWith(`${key}.`);
+            };
             const node = this;
             node.name = $("#node-input-name").val();
             node.controller = $("#node-input-controller").val();
             node.outputMode = $("#node-input-outputMode").val();
             node.msgType = $("#node-input-msgType").val();
+            node.debugTopics = $("#node-input-debugTopics").val().trim();
 
             const mappings = [];
+            const seen = new Set();
+            let dropped = 0;
             $("#mappings-container")
                 .editableList("items")
                 .each(function () {
                     const c = $(this);
-                    mappings.push({
-                        manual: c.find(".node-input-manual").is(":checked"),
-                        keyNameSelect: c.find(".node-input-keyNameSelect").val(),
-                        keyNameManual: c.find(".node-input-keyNameManual").val(),
+                    let keyNameSelect = sanitizeServiceKey(c.find(".node-input-keyNameSelect").val());
+                    let keyNameManual = sanitizeServiceKey(c.find(".node-input-keyNameManual").val());
+                    const topic = (c.find(".node-input-topic").val() || "").trim();
+                    const manual = c.find(".node-input-manual").is(":checked");
+                    if (!manual && !keyNameSelect && topic.includes(".")) {
+                        keyNameSelect = sanitizeServiceKey(topic.split(".")[0]);
+                    }
+                    if (manual && !keyNameManual && topic.includes(".")) {
+                        keyNameManual = sanitizeServiceKey(topic.split(".")[0]);
+                    }
+                    const row = {
+                        manual: manual,
+                        keyNameSelect: keyNameSelect,
+                        keyNameManual: keyNameManual,
                         dataType: c.find(".node-input-dataType").val(),
                         index: parseInt(c.find(".node-input-index").val()),
                         coefficient: parseFloat(c.find(".node-input-coefficient").val()),
-                        topic: c.find(".node-input-topic").val()
-                    });
+                        topic: topic
+                    };
+                    const activeSvcKey = row.manual ? row.keyNameManual : row.keyNameSelect;
+                    if (!row.manual && row.dataType === "value" && activeSvcKey && Number.isInteger(row.index)) {
+                        const currentTopic = (row.topic || "").trim();
+                        if (currentTopic === "" || topicLooksServiceTopic(currentTopic, activeSvcKey)) {
+                            row.topic = `${activeSvcKey}.${row.index}`;
+                        }
+                    }
+                    const svcKey = row.keyNameSelect || row.keyNameManual || "";
+                    const sig = `${svcKey}|${row.dataType || ""}|${Number.isInteger(row.index) ? row.index : ""}|${row.topic || ""}`;
+                    if (seen.has(sig)) {
+                        dropped += 1;
+                        return;
+                    }
+                    seen.add(sig);
+                    mappings.push(row);
                 });
             node.mappings = mappings;
+            if (dropped > 0) {
+                RED.notify(`Removed ${dropped} duplicate read mapping(s).`, { type: "warning", timeout: 4000 });
+            }
+
+            // Check for manual entries that conflict with controller keys
+            const controllerServices = node._controllerCache?.services || {};
+            const manualConflicts = mappings
+                .filter(m => m.manual && m.keyNameManual && controllerServices[m.keyNameManual])
+                .map(m => m.keyNameManual);
+
+            if (manualConflicts.length > 0) {
+                const uniqueConflicts = [...new Set(manualConflicts)];
+                RED.notify(`Warning: Manual entries override controller config for: ${uniqueConflicts.join(", ")}`, { type: "warning", timeout: 5000 });
+            }
         }
     });
 </script>
@@ -1045,6 +1198,12 @@
         color: #666;
     }
 
+    /* Saved key exists but controller-config filteredServices omitted it */
+    .read-data-streams-div select.read-ds-missing-key {
+        border-color: #ff9800 !important;
+        box-shadow: 0 0 0 1px rgba(255, 152, 0, 0.25);
+    }
+
     /* Autocomplete widget styling */
     .ui-autocomplete {
         max-height: 250px;
@@ -1136,6 +1295,43 @@
         border-radius: 5px !important;
         padding: 0 10px !important;
     }
+
+    .read-ds-loading {
+        display: none;
+        margin: 6px 0 10px 0;
+        padding: 8px 10px;
+        border: 1px solid #f3b2b2;
+        border-radius: 4px;
+        background: #ffe9e9;
+        color: #7a1f1f;
+        font-size: 13px;
+        font-weight: 700;
+    }
+
+    .read-ds-loading i {
+        margin-right: 6px;
+    }
+
+    .read-ds-loading-dim {
+        opacity: 0.55;
+        pointer-events: none;
+    }
+
+    .read-ds-mappings-wrap {
+        position: relative;
+    }
+
+    .read-ds-mappings-overlay {
+        display: none;
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(255, 170, 170, 0.22);
+        z-index: 5;
+        pointer-events: all;
+    }
 </style>
 
 <!-- Form fields for the node -->
@@ -1160,6 +1356,11 @@
             </select>
         </div>
         <div class="form-row">
+            <label for="node-input-debugTopics"><i class="fa fa-filter"></i> Debug topics (comma)</label>
+            <input type="text" id="node-input-debugTopics" placeholder="e.g. IMODW,THFW" />
+            <div class="form-tips">Log only matching topic prefixes to Node-RED log; leave empty to disable.</div>
+        </div>
+        <div class="form-row">
             <label for="node-input-msgType"><i class="fa fa-sign-out"></i> Message type</label>
             <select id="node-input-msgType">
                 <option value="" disabled selected>Select message type...</option>
@@ -1169,7 +1370,14 @@
             </select>
         </div>
 
-        <ol id="mappings-container"></ol>
+        <div id="read-ds-loading" class="read-ds-loading">
+            <i class="fa fa-spinner fa-spin"></i><span class="read-ds-loading-text">Loading...</span>
+        </div>
+
+        <div class="read-ds-mappings-wrap">
+            <ol id="mappings-container"></ol>
+            <div id="read-ds-mappings-overlay" class="read-ds-mappings-overlay"></div>
+        </div>
 
         <div class="form-tips" id="node-input-tip-text-1"></div>
         <div class="form-tips" id="node-input-tip-text-2"></div>

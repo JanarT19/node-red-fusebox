@@ -1,3 +1,4 @@
+const ts = require("../../core/lib/timestamp.js");
 /**
  * Flow Analyzer Node
  * Deep analysis of Node-RED flows to detect loops, issues, and optimization opportunities
@@ -9,6 +10,7 @@ module.exports = function (RED) {
     function FlowAnalyzerNode(config) {
         RED.nodes.createNode(this, config);
         const node = this;
+        ts.wrapNode(node);
 
         node.autoRunOnDeploy = config.autoRunOnDeploy !== false; // Default true
         node.showInStatus = config.showInStatus !== false; // Default true

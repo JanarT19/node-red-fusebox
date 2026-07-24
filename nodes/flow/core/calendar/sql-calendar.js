@@ -1,10 +1,30 @@
 const http = require("http");
+const ts = require("../lib/timestamp.js");
+
+// Helper function to identify message sender for debugging
+// Can be extracted to a shared utility module for use across all nodes
+function getMessageSource(RED, msg) {
+    let source = "unknown";
+
+    // Try msg._path (contains node IDs the message passed through)
+    if (msg._path) {
+        const pathNodes = Array.isArray(msg._path) ? msg._path : [msg._path];
+        if (pathNodes.length > 0) {
+            const sourceId = pathNodes[pathNodes.length - 1];
+            const sourceNode = RED.nodes.getNode(sourceId);
+            source = sourceNode ? sourceNode.name || sourceNode.id : sourceId;
+        }
+    }
+
+    return source;
+}
 
 // Custom node to perform CRUD operations via the /calendar endpoint.
 module.exports = function (RED) {
     function SqlCalendarNode(config) {
         RED.nodes.createNode(this, config);
         const node = this;
+        ts.wrapNode(node);
 
         var previousValues = {};
 
@@ -43,12 +63,21 @@ module.exports = function (RED) {
 
         // Check for unnecessary form values
         const invalidValues = ["", null, undefined];
-        const operationModeValid = ["check", "create", "read", "update", "delete"];
+        const operationModeValid = ["auto", "check", "create", "read", "update", "delete"];
 
         // Listen for input messages
         node.on("input", function (msg) {
-            const operationMode = node.operationMode;
-            const topic = node.topic;
+            // Allow incoming message to override operation mode
+            const operationMode = msg.mode || msg.operationMode || node.operationMode;
+
+            // If configured as "auto", msg.mode is required
+            if (node.operationMode === "auto" && !msg.mode && !msg.operationMode) {
+                // Silently skip messages without mode (e.g., monitoring data passing through)
+                return;
+            }
+
+            // Preserve incoming msg.topic for routing, fall back to configured topic
+            const topic = msg.topic || node.topic;
 
             const id = parseInt(evaluate(node.eventId, node.eventIdType, node, msg));
             const title = evaluate(node.title, node.titleType, node, msg);
@@ -57,15 +86,15 @@ module.exports = function (RED) {
             let start = evaluate(node.start, node.startType, node, msg);
             let end = evaluate(node.end, node.endType, node, msg);
 
-            // Convert date objects and ISO strings to unix timestamps (integers)
-            if (timestamp instanceof Date) timestamp = timestamp.getTime();
-            if (typeof timestamp === "string") timestamp = new Date(timestamp).getTime();
+            // Convert date objects and ISO strings to unix timestamps in seconds (calendar uses seconds)
+            if (timestamp instanceof Date) timestamp = Math.floor(timestamp.getTime() / 1000);
+            if (typeof timestamp === "string") timestamp = Math.floor(new Date(timestamp).getTime() / 1000);
 
-            if (start instanceof Date) start = start.getTime();
-            if (typeof start === "string") start = new Date(start).getTime();
+            if (start instanceof Date) start = Math.floor(start.getTime() / 1000);
+            if (typeof start === "string") start = Math.floor(new Date(start).getTime() / 1000);
 
-            if (end instanceof Date) end = end.getTime();
-            if (typeof end === "string") end = new Date(end).getTime();
+            if (end instanceof Date) end = Math.floor(end.getTime() / 1000);
+            if (typeof end === "string") end = Math.floor(new Date(end).getTime() / 1000);
 
             // Basic validation
             if (!operationModeValid.includes(operationMode)) {
@@ -130,12 +159,20 @@ module.exports = function (RED) {
             const parameters = { id, title, value, timestamp, start, end, operationMode };
 
             // Initialize the previous values object
+            const requestKey = getRequestKey(parameters);
             const previousRequest = getPreviousValue(parameters, "request");
 
             // Skip if a request is already in progress for this row
             if (previousRequest) {
-                node.status({ fill: "yellow", shape: "dot", text: `Request in progress for ${title || "event"} (${formatDate()})` });
+                if (node.enableLogging) {
+                    node.log(`Skipping duplicate request for key: ${requestKey}`);
+                }
+                node.status({ fill: "yellow", shape: "dot", text: `Request in progress for ${title || "event"} (${ts.formatStatus()})` });
                 return;
+            }
+
+            if (node.enableLogging && operationMode === "create") {
+                node.log(`Processing create request with key: ${requestKey}`);
             }
 
             // Build the POST request
@@ -150,6 +187,11 @@ module.exports = function (RED) {
                 if (invalidValues.includes(val) || (["id", "timestamp", "start", "end"].includes(key) && isNaN(val))) {
                     delete postData.configuration[key];
                 }
+            }
+
+            // Remove 'check' parameter from POST/PUT requests (only used in GET queries)
+            if (operationMode !== "check" && operationMode !== "read") {
+                delete postData.configuration.check;
             }
 
             setPreviousRequest(parameters, true);
@@ -208,12 +250,13 @@ module.exports = function (RED) {
                 port: node.controller.httpPort,
                 path: path,
                 method: method,
+                timeout: 10000,
                 headers: {
                     "Content-Type": "application/json"
                 }
             };
 
-            node.debug(`Querying HTTP: ${JSON.stringify(options)} with body ${JSON.stringify(postData)}`);
+            node.log(`Querying HTTP: ${JSON.stringify(options)} with body ${JSON.stringify(postData)}`);
 
             return new Promise((resolve, reject) => {
                 const req = http.request(options, (res) => {
@@ -225,34 +268,34 @@ module.exports = function (RED) {
 
                     res.on("end", () => {
                         try {
-                            node.debug(`Received HTTP message: ${data}`);
+                            node.log(`Received HTTP message: ${data}`);
                             const parsedData = JSON.parse(data);
 
                             if (parsedData?.success === true || parsedData) {
                                 node.status({
                                     fill: "green",
                                     shape: "dot",
-                                    text: `Calendar entry ${operationMode}${["read", "check"].includes(operationMode) ? "" : "d"} (${formatDate()})`
+                                    text: `Calendar entry ${operationMode}${["read", "check"].includes(operationMode) ? "" : "d"} (${ts.formatStatus()})`
                                 });
 
                                 resolve(parsedData);
                             } else {
                                 if (retries > 0) {
                                     node.warn(`Retrying... (${retries} attempts left)`);
-                                    node.status({ fill: "yellow", shape: "dot", text: `Retrying sending data (${formatDate()})` });
+                                    node.status({ fill: "yellow", shape: "dot", text: `Retrying sending data (${ts.formatStatus()})` });
 
                                     setTimeout(() => {
                                         resolve(sendCalendarOperation(node, postData, parameters, retries - 1));
                                     }, 500);
                                 } else {
                                     node.error(`Failed to send data`, parameters);
-                                    node.status({ fill: "red", shape: "dot", text: `Failed to send data (${formatDate()})` });
+                                    node.status({ fill: "red", shape: "dot", text: `Failed to send data (${ts.formatStatus()})` });
 
                                     resolve(false);
                                 }
                             }
                         } catch (error) {
-                            node.status({ fill: "red", shape: "dot", text: `Failed to parse HTTP response (${formatDate()})` });
+                            node.status({ fill: "red", shape: "dot", text: `Failed to parse HTTP response (${ts.formatStatus()})` });
 
                             // Retry if necessary
                             if (retries > 0) {
@@ -270,7 +313,7 @@ module.exports = function (RED) {
                 });
 
                 req.on("error", (error) => {
-                    node.status({ fill: "red", shape: "dot", text: `HTTP request error (${formatDate()})` });
+                    node.status({ fill: "red", shape: "dot", text: `HTTP request error (${ts.formatStatus()})` });
 
                     // Retry if necessary
                     if (retries > 0) {
@@ -283,6 +326,12 @@ module.exports = function (RED) {
                         node.error(`HTTP request error: ${error}`, { error });
                         reject(error);
                     }
+                });
+
+                req.on("timeout", () => {
+                    node.error(`HTTP request timed out (10s) for ${method} ${path} -- request will be destroyed. This can cause the enable signal to get stuck!`);
+                    node.status({ fill: "red", shape: "dot", text: `HTTP timeout (${ts.formatStatus()})` });
+                    req.destroy();
                 });
 
                 // Write data to request body
@@ -303,35 +352,46 @@ module.exports = function (RED) {
             }
         }
 
+        /**
+         * Generate a unique key for duplicate detection
+         * Uses title + time parameters to distinguish different events with same title
+         */
+        function getRequestKey(parameters) {
+            const { title = "_default", start, end, timestamp, id } = parameters;
+
+            // For events with start/end (range events), use title + start + end
+            if (start !== undefined && start !== null && end !== undefined && end !== null) {
+                return `${title}:${start}:${end}`;
+            }
+
+            // For events with timestamp, use title + timestamp
+            if (timestamp !== undefined && timestamp !== null) {
+                return `${title}:${timestamp}`;
+            }
+
+            // For updates/deletes with eventId, use title + id
+            if (id !== undefined && id !== null && !isNaN(id)) {
+                return `${title}:${id}`;
+            }
+
+            // Fallback to title only (for check/read operations)
+            return title;
+        }
+
         function getPreviousValue(parameters = {}, key = "title") {
-            const { title = "_default" } = parameters;
+            const requestKey = getRequestKey(parameters);
 
-            if (!previousValues[title]) previousValues[title] = { title: null, value: null, start: null, request: null };
+            if (!previousValues[requestKey]) previousValues[requestKey] = { title: null, value: null, start: null, request: null };
 
-            return previousValues[title][key] ?? null;
+            return previousValues[requestKey][key] ?? null;
         }
 
         function setPreviousRequest(parameters = {}, status = null) {
-            const { title = "_default" } = parameters;
+            const requestKey = getRequestKey(parameters);
 
-            previousValues[title].request = status;
-        }
+            if (!previousValues[requestKey]) previousValues[requestKey] = { title: null, value: null, start: null, request: null };
 
-        // Format the current date and time as DD/MM/YYYY HH:MM:SS
-        function formatDate() {
-            const now = new Date();
-
-            const options = {
-                day: "2-digit",
-                month: "2-digit",
-                year: "2-digit",
-                hour: "2-digit",
-                minute: "2-digit",
-                second: "2-digit",
-                hour12: false // Use 24-hour format
-            };
-
-            return now.toLocaleString("en-GB", options); // 'en-GB' locale for DD/MM/YYYY format
+            previousValues[requestKey].request = status;
         }
     }
 

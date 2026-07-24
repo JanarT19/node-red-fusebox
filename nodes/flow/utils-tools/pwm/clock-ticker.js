@@ -1,7 +1,9 @@
+const ts = require("../../core/lib/timestamp.js");
 module.exports = function (RED) {
     function ClockTickerNode(config) {
         RED.nodes.createNode(this, config);
         const node = this;
+        ts.wrapNode(node);
 
         const allowed = new Set([60, 300, 600, 1200, 1800, 3600]);
         let periodSec = Number(config.periodSec || 1800);

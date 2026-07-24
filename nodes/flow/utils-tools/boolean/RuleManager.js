@@ -41,7 +41,7 @@ const operators = {
     },
     nnull: function (a) {
         return typeof a != "undefined" && a !== null;
-    },
+    }
 };
 
 const gates = {
@@ -84,7 +84,7 @@ const gates = {
                 else return false;
             }).length !== 1
         );
-    },
+    }
 };
 
 // Calculate the number of validated rules and the total number of rules
@@ -100,7 +100,7 @@ const getParameters = (data) => {
     return data.map((element) => {
         return {
             payload: element.previousValue,
-            topic: element.topic,
+            topic: element.topic
         };
     });
 };
