@@ -21,9 +21,51 @@ This node is still in beta and might include bugs. Any feedback is welcome.
 
 ## Installation
 
-You can install this node directly from the "Manage Palette" menu in the Node-RED interface.
+### From Node-RED Palette Manager
 
-Alternatively, run the following command in your Node-RED user director: `npm install @janart19/node-red-fusebox`
+1. Open Node-RED editor
+2. Go to **Menu → Manage palette → Install**
+3. Search for `@janart19/node-red-fusebox`
+4. Click **Install**
+
+### From Command Line
+
+Run in your Node-RED user directory (typically `~/.node-red`):
+
+```bash
+npm install @janart19/node-red-fusebox
+```
+
+## Quick Start
+
+### 1. Configure a Controller
+
+- Add any `fusebox-*` node to your flow
+- Open the node's configuration dialog
+- Click the pencil icon next to "Controller"
+- Enter your Fusebox controller's connection details (IP, port)
+- Click "Add"
+
+### 2. Query Data Streams
+
+- Add a `fusebox-query-data-streams` node
+- Select your controller configuration
+- Connect an inject node to trigger queries
+- Connect a debug node to see output
+- Deploy and test
+
+### 3. Build Logic with Utilities
+
+- Use `fusebox-boolean-logic` for conditional operations
+- Add `fusebox-averager` for smooth sensor readings
+- Implement `fusebox-pid-controller` for custom control loops
+
+### 4. Set Up Energy Management
+
+- Add a `fusebox-inverter-control` node
+- Configure power limits and communication settings
+- Connect to grid frequency and power measurements
+- Enable grid support features as needed
 
 ## Available nodes
 
