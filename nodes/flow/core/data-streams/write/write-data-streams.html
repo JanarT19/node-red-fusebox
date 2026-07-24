@@ -1,0 +1,2085 @@
+<script type="text/javascript">
+    RED.nodes.registerType("fusebox-write-data-streams", {
+        category: "fusebox",
+        color: "#f5706c",
+        defaults: {
+            name: { value: "" },
+            controller: { value: "", type: "fusebox-controller", required: true },
+            outputMode: {
+                value: "",
+                validate: function (v) {
+                    return ["all", "change"].includes(v);
+                }
+            },
+            payloadType: {
+                value: "dynamic",
+                validate: function (v) {
+                    return ["static", "dynamic"].includes(v);
+                }
+            },
+            gatingMs: {
+                value: 1500,
+                validate: function (v) {
+                    const n = parseInt(v);
+                    return Number.isInteger(n) && n >= 0;
+                }
+            }, // Gate duration in milliseconds
+            mappings: { value: [] } // Store multiple mappings
+        },
+        inputs: 1,
+        outputs: 1,
+        icon: "font-awesome/fa-send",
+        label: function () {
+            const mappings = this.mappings;
+
+            let defaultName = `send data streams`;
+            if (mappings) defaultName = `send data streams: ${mappings.length}`;
+
+            return this.name || defaultName;
+        },
+        paletteLabel: function () {
+            return "send data streams";
+        },
+        oneditprepare: function () {
+            const node = this;
+            let _controller = {};
+            let _lastControllerId = null;
+
+            // Load existing mappings or initialize an empty array
+            const mappings = node.mappings || [];
+
+            // Populate form with node values
+            $("#node-input-name").val(node.name);
+            $("#node-input-controller").val(node.controller);
+            $("#node-input-outputMode").val(node.outputMode);
+            $("#node-input-payloadType").val(node.payloadType);
+            $("#node-input-gatingMs").val(node.gatingMs);
+
+            // Load controller data
+            $("#node-input-controller").change(queryControllerConfig);
+
+            // Define event listeners for form fields
+            $("#mappings-container, #node-input-payloadType, #node-input-outputMode").change(function () {
+                updateTipText();
+            });
+
+            $("#node-input-payloadType").change(function () {
+                const rows = getListElements();
+
+                for (const elements of rows) {
+                    populatePayload(elements);
+                    validatePayload(elements);
+                }
+            });
+
+            // Initialize the form fields
+            let currentSortColumn = "topic"; // Declare at function scope level
+            initializeEditableList();
+
+            // Query variables related to controller configuration
+            function queryControllerConfig() {
+                const controllerId = $("#node-input-controller").val();
+
+                if (_lastControllerId === controllerId) return;
+                _lastControllerId = controllerId;
+
+                $.getJSON(`fusebox/controller-config?id=${controllerId}`)
+                    .done(function (data) {
+                        _controller = data;
+
+                        // Log available datastreams to console for debugging
+                        const filteredServices = data.filteredServices || {};
+                        const channels = data.channels || {};
+                        const writableServices = data.writableServices || {};
+                        const filteredKeys = Object.keys(filteredServices).sort();
+                        const channelKeys = Object.keys(channels).sort();
+                        const writableKeys = Object.keys(writableServices).sort();
+
+                        // Find datastreams in channels but NOT in filteredServices
+                        const missingFromFiltered = channelKeys.filter((k) => !filteredKeys.includes(k));
+                        if (missingFromFiltered.length > 0) {
+                            console.log(
+                                "Write Data Streams: ⚠ Datastreams in channels but MISSING from filteredServices (excluded by backend):",
+                                missingFromFiltered.length,
+                                missingFromFiltered
+                            );
+                        }
+
+                        // Find datastreams in filteredServices but NOT in writableServices
+                        const inFilteredButNotWritable = filteredKeys.filter((k) => !writableKeys.includes(k));
+                        if (inFilteredButNotWritable.length > 0) {
+                            console.log(
+                                "Write Data Streams: ⚠ Datastreams in filteredServices but not in writableServices:",
+                                inFilteredButNotWritable.length,
+                                inFilteredButNotWritable
+                            );
+                        }
+
+                        // Final list shown in dropdown (all from filteredServices)
+                        console.log("Write Data Streams: Final list of datastreams available for write selection:", filteredKeys.length, filteredKeys);
+                    })
+                    .fail(function () {
+                        console.error("Failed to query controller configuration!");
+                        RED.notify("Failed to query controller configuration!", { type: "error", timeout: 3000 });
+                        _controller = {};
+                    })
+                    .always(function () {
+                        $("#mappings-container").editableList("empty");
+                        $("#mappings-container").editableList("addItems", mappings);
+                        updateTipText();
+                        setTimeout(() => {
+                            triggerSort();
+                            refreshAllPlusButtons();
+                        }, 200);
+                    });
+            }
+
+            // --- Helpers for 'Add next' & 'Add all' ---
+            function readAllRows() {
+                const rows = [];
+                $("#mappings-container")
+                    .editableList("items")
+                    .each(function () {
+                        const c = $(this);
+                        rows.push({
+                            keyNameSelect: c.find(".node-input-keyNameSelect").val() || "",
+                            keyNameManual: c.find(".node-input-keyNameManual").val() || "",
+                            index: parseInt(c.find(".node-input-index").val() || "0", 10) || 0
+                        });
+                    });
+                return rows;
+            }
+            function getUsedIndicesForKey(key) {
+                const rows = readAllRows();
+                return new Set(
+                    rows
+                        .filter((r) => (r.keyNameSelect || r.keyNameManual) === key)
+                        .map((r) => r.index)
+                        .filter((n) => Number.isInteger(n) && n > 0)
+                );
+            }
+            function computeMissingForKey(key) {
+                const used = Array.from(getUsedIndicesForKey(key)).sort((a, b) => a - b);
+                const missing = [];
+                let expect = 1;
+                for (const n of used) {
+                    while (expect < n) {
+                        missing.push(expect);
+                        expect++;
+                    }
+                    expect = n + 1;
+                }
+                // also offer the immediate next
+                missing.push(expect);
+                return missing;
+            }
+            // Loop detection in editor - find conflicting keys across ALL flows
+            // Store on node object so it's accessible in oneditsave
+            if (!node._loopConflictKeys) {
+                node._loopConflictKeys = new Set();
+            }
+
+            let loopConflictKeys = node._loopConflictKeys;
+
+            function detectLoopsInEditor() {
+                loopConflictKeys.clear();
+                const writeKeys = new Set();
+
+                // Get keys from current node's mappings
+                const currentMappings = node.mappings || [];
+                currentMappings.forEach((m) => {
+                    const key = m.keyNameSelect || m.keyNameManual;
+                    if (key) writeKeys.add(key);
+                });
+
+                // Find read nodes in ANY flow (cross-tab via link nodes)
+                RED.nodes.eachNode(function (otherNode) {
+                    if (otherNode.type === "fusebox-read-data-streams") {
+                        const readMappings = otherNode.mappings || [];
+                        readMappings.forEach((m) => {
+                            const key = m.keyNameSelect || m.keyNameManual;
+                            if (key && writeKeys.has(key)) {
+                                loopConflictKeys.add(key);
+                            }
+                        });
+                    }
+                });
+
+                console.log("Loop detection (all tabs): conflicting keys:", Array.from(loopConflictKeys));
+            }
+
+            // Run loop detection
+            detectLoopsInEditor();
+
+            // Show warning banner if loops detected
+            if (loopConflictKeys.size > 0) {
+                const banner = $(`<div class="loop-warning-banner" style="margin:0 0 15px 0;width:100%;max-width:none;">
+                    <div style="background-color:#fff3cd;border:2px solid #ff9800;border-radius:4px;padding:10px;box-sizing:border-box;">
+                        <div style="display:flex;align-items:flex-start;gap:12px;">
+                            <i class="fa fa-exclamation-triangle" style="color:#ff9800;font-size:18px;flex-shrink:0;margin-top:2px;"></i>
+                            <div style="flex:1;min-width:0;overflow:hidden;">
+                                <strong style="color:#856404;font-size:13px;display:block;margin-bottom:8px;">Potential Feedback Loop Detected!</strong>
+                                <div style="color:#856404;margin-bottom:10px;word-break:break-word;white-space:normal;">
+                                    Found potential loops for: <strong>${Array.from(loopConflictKeys).join(", ")}</strong>
+                                </div>
+                                <div style="color:#856404;font-size:85%;line-height:1.5;white-space:normal;">
+                                    <strong>Note:</strong> This detection compares topics only, not actual wiring. If these nodes are not connected, no loop exists.
+                                </div>
+                                <div style="color:#856404;margin-top:8px;font-size:85%;line-height:1.5;white-space:normal;">
+                                    <strong>If there IS a loop, options to prevent rapid updates:</strong>
+                                    <ul style="margin:4px 0 0 0;padding-left:20px;">
+                                        <li>Enable "Gate loop" checkbox for these topics (recommended), or</li>
+                                        <li>Remove looping datastream members from read or write node</li>
+                                    </ul>
+                                </div>
+                                <div style="margin-top:12px;padding-top:12px;border-top:1px solid #e0b95f;">
+                                    <button type="button" id="analyze-flow-btn" class="red-ui-button" style="background:#ff9800;color:white;font-weight:bold;">
+                                        <i class="fa fa-search"></i> Analyze Actual Flow Wiring
+                                    </button>
+                                    <span id="analyze-flow-msg" style="margin-left:10px;font-size:85%;color:#856404;"></span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>`);
+
+                $("#node-input-gatingMs").closest(".form-row").after(banner);
+
+                // Add handler for Analyze Flow button
+                $("#analyze-flow-btn").on("click", function () {
+                    const analyzerNodes = [];
+                    RED.nodes.eachNode(function (n) {
+                        if (n.type === "fusebox-flow-analyzer") {
+                            analyzerNodes.push(n);
+                        }
+                    });
+
+                    if (analyzerNodes.length === 0) {
+                        $("#analyze-flow-msg")
+                            .html('<i class="fa fa-info-circle"></i> No Flow Analyzer node found. Add a "fusebox-flow-analyzer" node to your workspace for deep analysis.')
+                            .css("color", "#d9534f");
+                        setTimeout(() => $("#analyze-flow-msg").fadeOut(), 5000);
+                    } else {
+                        const analyzer = analyzerNodes[0];
+                        $("#analyze-flow-msg").html('<i class="fa fa-spinner fa-spin"></i> Running deep flow analysis...').css("color", "#5cb85c").show();
+
+                        // Trigger the analyzer node
+                        $.ajax({
+                            url: "inject/" + analyzer.id,
+                            type: "POST",
+                            success: function (resp) {
+                                $("#analyze-flow-msg").html('<i class="fa fa-check"></i> Analysis complete! Check the Flow Analyzer node output.').css("color", "#5cb85c");
+                                setTimeout(() => $("#analyze-flow-msg").fadeOut(), 3000);
+                            },
+                            error: function (jqXHR, textStatus, errorThrown) {
+                                let errMsg = "Analysis failed";
+                                if (jqXHR.status == 404) {
+                                    errMsg = "Flow Analyzer node not deployed yet. Deploy first, then try again.";
+                                } else if (jqXHR.status == 500) {
+                                    errMsg = "Analysis error: " + textStatus;
+                                }
+                                $("#analyze-flow-msg")
+                                    .html('<i class="fa fa-exclamation-triangle"></i> ' + errMsg)
+                                    .css("color", "#d9534f");
+                                setTimeout(() => $("#analyze-flow-msg").fadeOut(), 5000);
+                            }
+                        });
+                    }
+                });
+            }
+
+            // Initialize the EditableList widget
+            function initializeEditableList() {
+                $("#mappings-container").editableList({
+                    removable: true,
+                    sortable: true,
+                    header: $("<div>").append(
+                        $.parseHTML(`
+                        <div style="width:22px"></div>
+                        <div class="write-data-streams-list" style="text-align:center;white-space:normal;flex:1">
+                            <div class="node-input-topic" id="sort-header-topic" style="cursor:pointer;user-select:none;">
+                                Topic <span class="sort-triangle" id="sort-triangle-topic">▲</span>
+                            </div>
+                            <span class="node-input-arrow">&nbsp;&nbsp;</span>
+                            <div class="checkbox-container">Manual</div>
+                            <div class="checkbox-container">Gate loop</div>
+                            <div class="node-input-keyNameManual" id="sort-header-datastream" style="cursor:pointer;user-select:none;">
+                                Data stream name <span class="sort-triangle" id="sort-triangle-datastream">▲</span>
+                            </div>
+                            <div class="node-input-index">Member index</div>
+                            <div class="node-input-channelType">Channel type</div>
+                            <div class="node-input-coefficient">Coefficient</div>
+                            <div class="node-input-payload">Payload</div>
+                            <div class="row-actions"></div>
+                         </div>
+                         <div style="width:28px"></div>
+                    `)
+                    ),
+                    buttons: [
+                        {
+                            label: "delete all",
+                            icon: "fa fa-trash",
+                            title: "delete all data stream mappings",
+                            click: function (e) {
+                                $("#mappings-container").editableList("empty");
+                                updateTipText();
+                            }
+                        },
+                        {
+                            label: "auto-generate entries",
+                            icon: "fa fa-refresh",
+                            title: "automatically generate rows for all available controller data streams",
+                            click: function (e) {
+                                const hasServices = _controller.writableServices && Object.keys(_controller.writableServices).length > 0;
+
+                                if (!hasServices) {
+                                    RED.notify("No available data streams to auto-generate mappings!", { type: "warning", timeout: 3000 });
+                                    return;
+                                }
+
+                                autoGenerateMappings();
+                            }
+                        }
+                    ],
+                    addItem: function (container, index, row) {
+                        addRowElements(container, row);
+
+                        const el = getRowElements(container);
+                        formatRow(el, row);
+                        attachRowEvents(el, container);
+
+                        // Initialize autocomplete for the topic input in this row
+                        initializeAutocomplete(el.topicElement, onAutocompleteSelect);
+
+                        // Add refresh for plus button
+                        refreshPlusButtonFor(container);
+
+                        setTimeout(() => {
+                            refreshAllPlusButtons();
+                        }, 200);
+
+                        updateTipText();
+                        setTimeout(() => {
+                            refreshAllPlusButtons();
+                        }, 100);
+                    },
+                    removeItem: function (data) {
+                        // Called after successful removal
+                        updateTipText();
+                        refreshAllPlusButtons();
+                    }
+                });
+
+                // Initialize sorting functionality
+                setTimeout(function () {
+                    $("#sort-header-datastream").on("click", function () {
+                        if (currentSortColumn !== "datastream") {
+                            currentSortColumn = "datastream";
+                            updateSortIndicators();
+                            triggerSort();
+                        }
+                    });
+
+                    $("#sort-header-topic").on("click", function () {
+                        if (currentSortColumn !== "topic") {
+                            currentSortColumn = "topic";
+                            updateSortIndicators();
+                            triggerSort();
+                        }
+                    });
+
+                    updateSortIndicators();
+                    triggerSort();
+                }, 100);
+            }
+
+            function updateSortIndicators() {
+                $(".sort-triangle").removeClass("active");
+                $(`#sort-triangle-${currentSortColumn}`).addClass("active");
+            }
+
+            function refreshAllPlusButtons() {
+                const items = $("#mappings-container").editableList("items");
+                items.each(function () {
+                    refreshPlusButtonFor($(this));
+                });
+            }
+
+            function refreshPlusButtonFor(container) {
+                // remove any existing old-style helpers and new dropdowns
+                container.find(".add-member-dropdown").remove();
+                container.find(".index-helpers").remove(); // Remove old style buttons
+
+                const el = getRowElements(container);
+                const manual = el.manualElement?.is(":checked");
+                if (manual) {
+                    return;
+                }
+
+                const key = el.keySelectElement.val();
+                const idx = parseInt(el.indexElement.val(), 10);
+
+                if (!key || !Number.isInteger(idx)) {
+                    return;
+                }
+
+                // Get all members for this datastream
+                const allUsedForThisKey = getUsedIndicesForDataStream(key);
+
+                // Apply writability rules: "s"/"s!"/"r" always writable, "h"/"c"/"h!"/"c!" if _output is true
+                const allMembers = _controller?.channels?.[key] ? Object.values(_controller.channels[key]) : [];
+                const writableMembers = allMembers.filter((member) => {
+                    const regtype = member.regtype;
+                    const hasOutput = member._output === true;
+                    if (["s", "s!", "r"].includes(regtype)) return true;
+                    if (["h", "c", "h!", "c!"].includes(regtype)) return hasOutput;
+                    return false;
+                });
+                const allAvailableForThisKey = writableMembers.map((m) => parseInt(m.member, 10)).sort((a, b) => a - b);
+
+                const missingForThisKey = allAvailableForThisKey.filter((i) => !allUsedForThisKey.includes(i));
+
+                // Find max used index to know if this is the last member
+                const maxUsedIndex = allUsedForThisKey.length > 0 ? Math.max(...allUsedForThisKey) : 0;
+                const isLastMember = idx === maxUsedIndex;
+
+                // Only show button if this is the last member AND there are missing members
+                if (!isLastMember || missingForThisKey.length === 0) {
+                    return;
+                }
+
+                // Find the next missing member AFTER the current index (like read node)
+                const nextMissingIndex = missingForThisKey.find((i) => i > idx);
+
+                if (!nextMissingIndex) {
+                    return; // No next member available
+                }
+
+                // Insert dropdown before remove button
+                const actionsDiv = container.find(".row-actions");
+
+                // Build dropdown HTML like read node
+                let dropdownHtml = '<select class="add-member-dropdown"  title="Add members for ' + key + '">';
+                dropdownHtml += '<option value="" selected disabled>+</option>';
+                dropdownHtml += '<option value="next">Add next member (' + nextMissingIndex + ")</option>";
+
+                if (missingForThisKey.length > 1) {
+                    dropdownHtml += '<option value="all">Add all missing (' + missingForThisKey.length + ")</option>";
+                }
+
+                dropdownHtml += "</select>";
+
+                const dropdown = $(dropdownHtml);
+                dropdown.on("change", function (e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const action = $(this).val();
+                    if (action === "next") {
+                        addNextMember(key, nextMissingIndex);
+                    } else if (action === "all") {
+                        // Recompute what's actually missing NOW (not when button was created)
+                        const currentlyUsed = getUsedIndicesForDataStream(key);
+                        const allAvailableForThisKey = _controller?.channels?.[key]
+                            ? Object.values(_controller.channels[key])
+                                  .map((m) => parseInt(m.member, 10))
+                                  .sort((a, b) => a - b)
+                            : [];
+                        const actuallyMissingNow = allAvailableForThisKey.filter((i) => !currentlyUsed.includes(i));
+                        addAllMissingMembers(key, actuallyMissingNow);
+                    }
+                    // Reset dropdown
+                    $(this).val("");
+                });
+
+                actionsDiv.append(dropdown);
+            }
+
+            // Helper function to determine channel type for a given key and index
+            function determineChannelType(key, idx) {
+                const channels = _controller?.channels || {};
+
+                if (!channels[key]) {
+                    return "ao"; // Default fallback
+                }
+
+                const channel = channels[key];
+                const memberObjects = Object.values(channel);
+                const member = memberObjects.find((m) => parseInt(m.member, 10) === idx);
+
+                if (!member) {
+                    return "ao"; // Default fallback
+                }
+
+                // Determine channel type based on member properties
+                // Input/read registers (s, s!, r) -> AI or DI
+                if (["s", "s!", "r"].includes(member.regtype)) {
+                    if (member._type === "analogue") {
+                        return "ai";
+                    } else if (member._type === "discrete") {
+                        return "di";
+                    } else {
+                        return "ai"; // Default for input if type unclear
+                    }
+                }
+                // Output registers (h, c, h!, c!) -> AO or DO (only if _output is true)
+                else if (["h", "c", "h!", "c!"].includes(member.regtype) && member._output) {
+                    if (member._type === "analogue") {
+                        return "ao";
+                    } else if (member._type === "discrete") {
+                        return "do";
+                    } else {
+                        return "ao"; // Default for output if type unclear
+                    }
+                } else {
+                    return "ao"; // Default fallback
+                }
+            }
+
+            function addNextMember(key, idx) {
+                const channelType = determineChannelType(key, idx);
+                const row = {
+                    manual: false,
+                    gateLoop: false,
+                    keyNameSelect: key,
+                    index: idx.toString(),
+                    topic: `${key}.${idx}`,
+                    channelType: channelType,
+                    coefficient: "1",
+                    payload: ""
+                };
+                $("#mappings-container").editableList("addItems", [row]);
+                // Give it time for the item to be added to the DOM before refreshing
+                setTimeout(() => {
+                    refreshAllPlusButtons();
+                }, 150);
+            }
+
+            function addAllMissingMembers(key, indices) {
+                // Recompute what's missing NOW (not from when the button was clicked)
+                const currentlyUsed = getUsedIndicesForDataStream(key);
+
+                // Get all available members
+                const allAvailableForThisKey = _controller?.channels?.[key]
+                    ? Object.values(_controller.channels[key])
+                          .map((m) => parseInt(m.member, 10))
+                          .sort((a, b) => a - b)
+                    : [];
+
+                // Filter to only actually missing ones
+                const actuallyMissing = indices.filter((idx) => allAvailableForThisKey.includes(idx) && !currentlyUsed.includes(idx));
+
+                if (actuallyMissing.length === 0) {
+                    return;
+                }
+
+                // Build all rows first, determining channel type for each member dynamically
+                const newRows = actuallyMissing.map((idx) => {
+                    const channelType = determineChannelType(key, idx);
+                    return {
+                        manual: false,
+                        gateLoop: false,
+                        keyNameSelect: key,
+                        index: idx.toString(),
+                        topic: `${key}.${idx}`,
+                        channelType: channelType,
+                        coefficient: "1",
+                        payload: ""
+                    };
+                });
+
+                $("#mappings-container").editableList("addItems", newRows);
+
+                // Give it time for the items to be added to the DOM before refreshing
+                setTimeout(() => {
+                    refreshAllPlusButtons();
+                }, 150);
+            }
+
+            function getUsedIndicesForDataStream(key) {
+                const used = [];
+                const items = $("#mappings-container").editableList("items");
+
+                items.each(function () {
+                    const c = $(this);
+                    const el = getRowElements(c);
+                    const manual = el.manualElement?.is(":checked");
+                    const rowKey = manual ? el.keyManualElement.val() : el.keySelectElement.val();
+                    const idxVal = el.indexElement.val();
+                    const idx = parseInt(idxVal, 10);
+
+                    if (rowKey === key && Number.isInteger(idx) && idx >= 0) {
+                        used.push(idx);
+                    }
+                });
+
+                const result = [...new Set(used)].sort((a, b) => a - b);
+                return result;
+            }
+
+            function triggerSort() {
+                const currentItems = [];
+                $("#mappings-container")
+                    .editableList("items")
+                    .each(function () {
+                        const container = $(this);
+
+                        const el = getRowElements(container);
+                        const manual = el.manualElement?.is(":checked");
+                        const gateLoop = el.gateLoopElement?.is(":checked");
+                        const keyNameSelect = el.keySelectElement.val();
+                        const keyNameManual = el.keyManualElement.val();
+                        const key = manual ? keyNameManual : keyNameSelect;
+                        const idx = parseInt(el.indexElement.val(), 10);
+                        const topic = el.topicElement.val();
+                        const channelType = el.channelTypeElement.val();
+                        const coefficient = el.coefficientElement.val();
+                        const payload = el.payloadElement.val();
+
+                        currentItems.push({
+                            manual: !!manual,
+                            gateLoop: !!gateLoop,
+                            key: key || "",
+                            keyNameSelect,
+                            keyNameManual,
+                            channelType,
+                            coefficient,
+                            payload,
+                            index: idx || 0,
+                            topic: topic || "",
+                            container: container
+                        });
+                    });
+
+                // Sort based on current column
+                currentItems.sort((a, b) => {
+                    let primary;
+                    if (currentSortColumn === "datastream") {
+                        primary = a.key.localeCompare(b.key);
+                    } else {
+                        primary = a.topic.localeCompare(b.topic);
+                    }
+
+                    if (primary !== 0) return primary;
+                    // Secondary sort by index
+                    return a.index - b.index;
+                });
+
+                // Rebuild list with sorted data
+                $("#mappings-container").editableList("empty");
+                currentItems.forEach((item) => {
+                    const data = {
+                        manual: item.manual,
+                        gateLoop: item.gateLoop,
+                        keyNameSelect: item.keyNameSelect,
+                        keyNameManual: item.keyNameManual,
+                        channelType: item.channelType,
+                        index: item.index ? item.index.toString() : "",
+                        coefficient: item.coefficient,
+                        payload: item.payload,
+                        topic: item.topic
+                    };
+
+                    $("#mappings-container").editableList("addItem", data);
+                });
+
+                setTimeout(refreshAllPlusButtons, 100);
+            }
+
+            // Initialize autocomplete for topic inputs in the editable list
+            function initializeAutocomplete(element, onSelect = null) {
+                element
+                    .autocomplete({
+                        minLength: 0,
+                        source: function (request, response) {
+                            const term = request.term.toLowerCase();
+                            const selection = getTopics();
+
+                            const matches =
+                                selection?.filter((obj) => {
+                                    return obj && obj.label && obj.label.toLowerCase().indexOf(term) > -1;
+                                }) || [];
+
+                            response(matches);
+                        },
+                        focus: function (event, ui) {
+                            // Don't change the input value on hover/focus
+                            event.preventDefault();
+                        },
+                        select: function (event, ui) {
+                            event.preventDefault();
+                            element.val(ui.item.topic);
+
+                            // Call the onSelect callback if provided
+                            if (onSelect) onSelect(element, ui.item);
+                        }
+                    })
+                    .on("focus", function () {
+                        element.autocomplete("search", element.val() || "");
+                    })
+                    .autocomplete("instance")._renderItem = function (ul, item) {
+                    const term = this.term.trim();
+                    const label = item?.label || item?.topic || "";
+                    let highlightedLabel = label;
+
+                    if (term) {
+                        const regex = new RegExp("(" + term.replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&") + ")", "ig");
+                        highlightedLabel = label.replace(regex, '<strong style="color:#e65; font-weight:bold">$1</strong>');
+                    }
+
+                    return $("<li></li>").data("ui-autocomplete-item", item).append(`<div>${highlightedLabel}</div>`).appendTo(ul);
+                };
+            }
+
+            // Return a list of topics from the controller configuration
+            // Structure: [ { key: "ABC", member: 1, topic: test/1, label: ... } ]
+            // TODO: revert back to prev version? Unnecessary complexity here, already implemented elsewhere: writableServices
+            function getTopics() {
+                const allTopics = _controller?.formattedTopics || [];
+                const channels = _controller?.channels || {};
+
+                // Filter out any null/undefined topics first
+                const validTopics = allTopics.filter((topic) => topic && topic.key && topic.member !== undefined);
+
+                const filteredTopics = validTopics.filter((topic) => {
+                    const key = topic.key;
+                    const member = topic.member;
+
+                    // Check if datastream exists in channels (unfiltered list)
+                    if (!channels[key]) return false;
+
+                    // Apply writability rules: "s"/"s!"/"r" always writable, "h"/"c"/"h!"/"c!" only if _output is true
+                    // Find the member in channels to check its regtype
+                    const channelMembers = channels[key] || {};
+                    const memberObj = Object.values(channelMembers).find((m) => parseInt(m.member, 10) === member);
+
+                    if (!memberObj) return false; // Member not found in channels
+
+                    const regtype = memberObj.regtype;
+                    const hasOutput = memberObj._output === true;
+
+                    if (["s", "s!", "r"].includes(regtype)) {
+                        return true; // Input/read registers are always writable
+                    }
+                    if (["h", "c", "h!", "c!"].includes(regtype)) {
+                        return hasOutput; // Holding/coil (with or without !) writable if _output is true
+                    }
+                    return false; // Unknown regtype
+                });
+
+                return filteredTopics;
+            }
+
+            // Further processing of a row after a topic is selected from the autocomplete
+            function onAutocompleteSelect(element, obj = {}) {
+                const container = element.closest(".red-ui-editableList-item-content");
+                let elements = getRowElements(container);
+
+                validateTopic(elements);
+
+                // Try to set the key and index fields according to the selected topic
+                const key = obj.key;
+                const member = obj.member;
+                const manual = elements.manualElement.is(":checked");
+
+                if (manual || !key || !member) return;
+
+                if (topicRelatedToService(`${key}.${member}`)) {
+                    elements.keySelectElement.val(key).trigger("change");
+
+                    // NB! Because populateIndex() changes the element, find the latest
+                    elements = getRowElements(container);
+                    elements.indexElement.val(String(member)).trigger("input").trigger("change");
+                }
+            }
+
+            // Return true if the topic is related to a service
+            function topicRelatedToService(topic) {
+                const fs = _controller?.filteredServices;
+                if (!fs || !topic || !topic.includes(".")) return false;
+
+                const key = topic.split(".")[0];
+                const member = topic.split(".")[1];
+
+                return fs?.[key] && Number.isInteger(parseInt(member)) && parseInt(member) >= 1 && parseInt(member) <= 16;
+            }
+
+            // Append the row to the container
+            function addRowElements(container, row) {
+                // Check if this key has loop conflicts
+                const key = row.keyNameSelect || row.keyNameManual;
+                const loopDetected = (node._loopConflictKeys || new Set()).has(key);
+
+                // TODO: fix layout
+                const rowHtml = `
+                <div class="write-data-streams-list">
+                    <input type="text" class="node-input-topic" placeholder="Topic" value="${row.topic || ""}">
+                    <span class="node-input-arrow">&#8594;</span>
+                    <div class="checkbox-container">
+                        <input type="checkbox" class="node-input-manual" ${row.manual === true ? "checked" : ""}>
+                        <div class="helper-text">Manual</div>
+                    </div>
+                    <div class="checkbox-container">
+                        <input type="checkbox" class="node-input-gateLoop" ${row.gateLoop === true ? "checked" : ""} ${loopDetected ? "" : "disabled"} title="${
+                    loopDetected ? "Loop detected with read node" : "No loop detected"
+                }">
+                        <div class="helper-text">Gate loop</div>
+                    </div>
+                    <select class="node-input-keyNameSelect"></select>
+                    <input type="text" class="node-input-keyNameManual" placeholder="Manual entry, e.g. ABCW" value="${row.keyNameManual || ""}">
+                    <input type="number" class="node-input-index" placeholder="Member" value="${row.index || ""}" min="1" max="16">
+                    <select class="node-input-channelType">
+                        <option value="">Channel type...</option>
+                        <option value="ai" ${row.channelType === "ai" ? "selected" : ""}>Analogue input (AI)</option>
+                        <option value="ao" ${row.channelType === "ao" ? "selected" : ""}>Analogue output (AO)</option>
+                        <option value="di" ${row.channelType === "di" ? "selected" : ""}>Discrete input (DI)</option>
+                        <option value="do" ${row.channelType === "do" ? "selected" : ""}>Discrete output (DO)</option>
+                    </select>
+                    <input type="number" class="node-input-coefficient" placeholder="Coef." value="${row.coefficient || ""}" step="0.01">
+                    <input type="number" class="node-input-payload" placeholder="Payload" value="${row.payload || ""}" step="0.01">
+                    <div class="row-actions"></div>
+                </div>`;
+                container.append(rowHtml);
+            }
+
+            // Get references to the created elements
+            function getRowElements(container) {
+                return {
+                    topicElement: container.find(".node-input-topic"),
+                    manualElement: container.find(".node-input-manual"),
+                    gateLoopElement: container.find(".node-input-gateLoop"),
+                    keyManualElement: container.find(".node-input-keyNameManual"),
+                    keySelectElement: container.find(".node-input-keyNameSelect"),
+                    indexElement: container.find(".node-input-index"),
+                    channelTypeElement: container.find(".node-input-channelType"),
+                    coefficientElement: container.find(".node-input-coefficient"),
+                    payloadElement: container.find(".node-input-payload")
+                };
+            }
+
+            // Format the newly created / intialized row's elements
+            // TODO: revert back to prev version? Unnecessary complexity here, already implemented elsewhere: writableServices
+            function formatRow(elements, row) {
+                const channels = _controller.channels || {};
+                const filteredServices = _controller.filteredServices || {}; // Still used for metadata (servicename, conv_coef)
+
+                // Apply our own writability filtering to channels (unfiltered list from backend)
+                // A datastream is writable if it has at least one writable member
+                // Rules: s/s!/r always writable; h/c/h!/c! writable if _output is true
+                const writableDatastreams = {};
+                Object.keys(channels).forEach((key) => {
+                    const keyChannels = channels[key] || {};
+                    const members = Object.values(keyChannels);
+
+                    // Check if this datastream has at least one writable member
+                    const hasWritableMember = members.some((member) => {
+                        const regtype = member.regtype;
+                        const hasOutput = member._output === true;
+
+                        // Always writable: input registers and read registers
+                        if (["s", "s!", "r"].includes(regtype)) {
+                            return true;
+                        }
+                        // Holding/coil registers (with or without !) are writable if _output is true
+                        if (["h", "c", "h!", "c!"].includes(regtype)) {
+                            return hasOutput;
+                        }
+                        return false;
+                    });
+
+                    if (hasWritableMember) {
+                        writableDatastreams[key] = filteredServices[key] || { servicename: key }; // Use metadata if available
+                    }
+                });
+
+                const keySelectElement = elements.keySelectElement;
+                const selectedKey = row.keyNameSelect;
+                const manual = row.manual === true;
+                const gateLoop = row.gateLoop === true;
+
+                if (elements.manualElement.length) {
+                    elements.manualElement.prop("checked", manual);
+                }
+
+                if (elements.gateLoopElement.length) {
+                    elements.gateLoopElement.prop("checked", gateLoop);
+                }
+
+                const filteredSvcKeys = sortKeysByServiceNames(writableDatastreams);
+
+                // Log to system console for debugging
+                console.log("Write Data Streams: Available datastreams for write selection:", filteredSvcKeys);
+                console.log("Write Data Streams: Total count:", filteredSvcKeys.length);
+                if (filteredSvcKeys.length > 0) {
+                    console.log("Write Data Streams: First 10 datastreams:", filteredSvcKeys.slice(0, 10));
+                }
+
+                clearDropdown(keySelectElement, { text: "Select data stream..." });
+
+                // Populate the key selection dropdown with available keys
+                filteredSvcKeys.forEach((key) => {
+                    const serviceName = writableDatastreams[key]?.servicename || filteredServices[key]?.servicename || key;
+
+                    const text = `${serviceName} (${key})`;
+                    const el = $(`<option value="${key}" ${selectedKey === key ? "selected" : ""}>${text}</option>`);
+
+                    keySelectElement.append(el);
+                });
+
+                // Explicitly set the dropdown value if selectedKey is provided
+                if (selectedKey) {
+                    keySelectElement.val(selectedKey);
+                }
+
+                updateKeyName(elements);
+                validateKeyName(elements);
+
+                // Pass row to populateIndex so it can use row.index as fallback
+                populateIndex(elements, row);
+
+                // Also explicitly set the value after populateIndex (matching read node pattern)
+                updateIndex(elements, row);
+                validateIndex(elements);
+
+                populateChannelType(elements, row); // Auto-determines and sets channel type (read-only)
+                updateChannelType(elements, row);
+                validateChannelType(elements);
+
+                populatePayload(elements);
+                validatePayload(elements);
+
+                updateCoefficient(elements);
+                validateCoefficient(elements);
+
+                // Auto-generate topic from key and index after both are set
+                // Use a small delay to ensure index dropdown value is set in DOM
+                setTimeout(() => {
+                    updateTopic(elements);
+                    validateTopic(elements);
+                }, 10);
+            }
+
+            // Attach events to the row elements
+            function attachRowEvents(elements = {}, container) {
+                elements.manualElement.on("change", function () {
+                    updateKeyName(elements);
+                    validateKeyName(elements);
+
+                    populateIndex(elements, {});
+                    validateIndex(elements);
+
+                    populateChannelType(elements, {});
+                    validateChannelType(elements);
+
+                    populatePayload(elements);
+                    validatePayload(elements);
+
+                    updateCoefficient(elements);
+                    validateCoefficient(elements);
+
+                    updateTopic(elements);
+                    validateTopic(elements);
+
+                    refreshPlusButtonFor(container);
+                });
+
+                elements.keySelectElement.on("change", function () {
+                    validateKeyName(elements);
+
+                    populateIndex(elements, {});
+                    validateIndex(elements);
+
+                    populateChannelType(elements, {}); // Auto-determine channel type
+                    validateChannelType(elements);
+
+                    populatePayload(elements);
+                    validatePayload(elements);
+
+                    updateCoefficient(elements);
+                    validateCoefficient(elements);
+
+                    updateTopic(elements);
+                    validateTopic(elements);
+
+                    refreshPlusButtonFor(container);
+                });
+
+                elements.keyManualElement.on("change input", function () {
+                    validateKeyName(elements);
+
+                    populateChannelType(elements, {});
+                    validateChannelType(elements);
+
+                    populatePayload(elements);
+                    validatePayload(elements);
+
+                    updateCoefficient(elements);
+                    validateCoefficient(elements);
+
+                    updateTopic(elements);
+                    validateTopic(elements);
+
+                    refreshPlusButtonFor(container);
+                });
+
+                elements.indexElement.on("change", function () {
+                    populateChannelType(elements, {}); // Auto-determine channel type when index changes
+                    validateChannelType(elements);
+                    populatePayload(elements);
+                    validatePayload(elements);
+                    updateCoefficient(elements);
+                    validateCoefficient(elements);
+                    updateTopic(elements);
+                    validateTopic(elements);
+                    refreshPlusButtonFor(container);
+                });
+
+                elements.indexElement.on("input", function () {
+                    validateIndex(elements);
+                    refreshPlusButtonFor(container);
+                });
+
+                elements.channelTypeElement.on("change", function () {
+                    populatePayload(elements);
+                    validatePayload(elements);
+                    updateCoefficient(elements);
+                    validateCoefficient(elements);
+                    refreshPlusButtonFor(container);
+                });
+
+                elements.coefficientElement.on("input", function () {
+                    validateCoefficient(elements);
+                });
+
+                elements.payloadElement.on("input change", function () {
+                    validatePayload(elements);
+                });
+
+                elements.topicElement.on("input", function () {
+                    validateTopic(elements);
+                });
+            }
+
+            // Toggle UI between controller selection and manual entry
+            function updateKeyName(elements) {
+                const manual = elements.manualElement.is(":checked");
+                const helperText = elements.manualElement.closest(".checkbox-container").find(".helper-text");
+
+                if (manual) {
+                    elements.keySelectElement.val("");
+                    elements.keySelectElement.hide();
+                    elements.keyManualElement.show();
+                    elements.channelTypeElement.prop("disabled", false);
+                    elements.coefficientElement.prop("disabled", false);
+                    helperText.text("manual");
+                } else {
+                    elements.keyManualElement.val("");
+                    elements.keyManualElement.hide();
+                    elements.keySelectElement.show();
+                    helperText.text("from controller");
+                }
+            }
+
+            // Update index element with row data (like read node)
+            function updateIndex(elements, row = {}) {
+                const prev = row.index || "";
+                console.log("updateIndex CALLED: prev =", prev, "row.index =", row.index);
+
+                // Re-find the element to ensure we have the latest reference
+                let existingId = elements.indexElement.attr("data-id");
+                console.log("updateIndex: existingId from element:", existingId);
+
+                if (existingId) {
+                    const foundElement = $(`.node-input-index[data-id="${existingId}"]`);
+                    console.log("updateIndex: Found element by data-id:", foundElement.length);
+                    if (foundElement.length > 0) {
+                        elements.indexElement = foundElement;
+                    }
+                } else {
+                    // If no data-id, try to find it by class within the same container (fallback)
+                    console.log("updateIndex: No data-id, trying to find element by class");
+                    const container = elements.indexElement.closest(".write-data-streams-list, .red-ui-editableList-item-content");
+                    if (container.length > 0) {
+                        const foundElement = container.find(".node-input-index");
+                        console.log("updateIndex: Found element in container:", foundElement.length);
+                        if (foundElement.length > 0) {
+                            elements.indexElement = foundElement.first();
+                            existingId = elements.indexElement.attr("data-id");
+                            console.log("updateIndex: Found element data-id:", existingId);
+                        }
+                    }
+                }
+
+                console.log("updateIndex: Final element found:", elements.indexElement.length, "tagName:", elements.indexElement.prop("tagName"));
+                if (elements.indexElement.length > 0 && prev) {
+                    console.log("updateIndex: Attempting to set value:", prev);
+                    elements.indexElement.prop("disabled", false).val(prev);
+                    const actualValue = elements.indexElement.val();
+                    console.log("updateIndex: Value set. Expected:", prev, "Actual:", actualValue, "Match:", prev == actualValue);
+                } else {
+                    console.log("updateIndex: SKIPPED - element not found or prev empty. element.length:", elements.indexElement.length, "prev:", prev);
+                }
+            }
+
+            // Update coefficient field based on the selected key
+            function updateCoefficient(elements) {
+                const manual = elements.manualElement?.is(":checked");
+                const channelType = elements.channelTypeElement.val() ?? "";
+                const keyNameSelect = elements.keySelectElement.val();
+
+                const filteredServices = _controller.filteredServices || {};
+                const keyName = keyNameSelect;
+
+                if (manual) {
+                    if (!elements.coefficientElement.val()) {
+                        elements.coefficientElement.val("1");
+                    }
+                    elements.coefficientElement.prop("disabled", false);
+                } else if (keyName && filteredServices[keyName]) {
+                    const convCoef = filteredServices[keyName]?.conv_coef || 1;
+
+                    elements.coefficientElement.val(convCoef);
+                    elements.coefficientElement.prop("disabled", true);
+                } else {
+                    elements.coefficientElement.val("1");
+                    elements.coefficientElement.prop("disabled", false);
+                }
+
+                if (channelType.startsWith("d")) {
+                    elements.coefficientElement.val("");
+                    elements.coefficientElement.prop("disabled", true);
+                }
+            }
+
+            // Update the index element based on the selected key
+            function populateIndex(elements, row = {}) {
+                const keyNameSelect = elements.keySelectElement.val();
+
+                let el = elements.indexElement;
+                // Get index from element first, then from row data as fallback (like read node pattern)
+                let prevIndex = el.val();
+                if (!prevIndex && row.index) {
+                    prevIndex = row.index;
+                }
+
+                console.log("populateIndex: prevIndex from element:", el.val(), "from row:", row.index, "final:", prevIndex, "keyNameSelect:", keyNameSelect);
+
+                // Check if element already has a data-id
+                const existingId = el.attr("data-id");
+
+                // Use existing ID if available, otherwise generate a new one
+                const id = existingId || Math.random().toString(36).substr(2, 9);
+
+                // TODO: revert back to prev version? Unnecessary complexity here, already implemented elsewhere: writableServices
+
+                if (keyNameSelect) {
+                    // Get all available members from channels
+                    const channels = _controller?.channels?.[keyNameSelect] || {};
+                    const allMembers = Object.values(channels);
+
+                    // Filter members based on writability rules:
+                    // - "s", "s!", "r" (input registers, read registers) are ALWAYS writable
+                    // - "h", "c", "h!", "c!" (holding/coil registers) are writable if _output is true
+                    const writableMembers = allMembers.filter((member) => {
+                        const regtype = member.regtype;
+                        const hasOutput = member._output === true;
+
+                        // Always writable: input registers and read registers
+                        if (["s", "s!", "r"].includes(regtype)) {
+                            return true;
+                        }
+                        // Holding/coil registers (with or without !) are writable if _output is true
+                        if (["h", "c", "h!", "c!"].includes(regtype)) {
+                            return hasOutput;
+                        }
+                        // Unknown/other regtypes - not writable
+                        return false;
+                    });
+
+                    const indexes = writableMembers.map((m) => parseInt(m.member, 10)).sort((a, b) => a - b);
+
+                    console.log("populateIndex: all channels members:", allMembers.length, "writable members (after rules):", indexes);
+
+                    // If prevIndex is provided but not in writable list, use number input instead of dropdown
+                    const prevIndexNum = prevIndex ? parseInt(prevIndex, 10) : null;
+                    const isPrevIndexWritable = prevIndexNum !== null && indexes.includes(prevIndexNum);
+
+                    if (prevIndexNum !== null && !isPrevIndexWritable) {
+                        // prevIndex exists but is not writable - use number input to preserve the value
+                        console.log("populateIndex: prevIndex", prevIndexNum, "is not writable, using number input");
+                        el.replaceWith(`<input data-id="${id}" type="number" class="node-input-index" placeholder="Member" value="${prevIndexNum}" min="1" max="32">`);
+                        el = elements.indexElement = $(`.node-input-index[data-id="${id}"]`);
+                        // Reattach event handlers for the new input element
+                        const container = el.closest(".write-data-streams-list, .red-ui-editableList-item-content");
+                        if (container.length > 0) {
+                            attachRowEvents(getRowElements(container), container);
+                        }
+                    } else {
+                        // Normal case: create dropdown with writable options
+                        const options = indexes.map((idx) => {
+                            const desc = findValueBySvcNameAndMember(_controller.channels, keyNameSelect, idx, "desc");
+                            // Convert both to strings for comparison to handle "2" == 2 cases
+                            const selected = String(prevIndex) == String(idx) ? "selected" : "";
+                            console.log(
+                                "populateIndex: Creating option for idx:",
+                                idx,
+                                "type:",
+                                typeof idx,
+                                "selected:",
+                                selected,
+                                "prevIndex:",
+                                prevIndex,
+                                "prevIndex type:",
+                                typeof prevIndex
+                            );
+                            return `<option value="${idx}" ${selected}>${idx} ${desc ? `(${desc})` : ``}</option>`;
+                        });
+
+                        // Create select HTML with the correct value selected
+                        const selectHtml = `<select data-id="${id}" class="node-input-index">${options.join("")}</select>`;
+                        el.replaceWith(selectHtml);
+
+                        // After replacing, find the element and set the value
+                        el = elements.indexElement = $(`.node-input-index[data-id="${id}"]`);
+                        if (prevIndex && isPrevIndexWritable) {
+                            console.log("populateIndex: Setting value to:", prevIndex);
+                            el.val(prevIndex);
+                            console.log("populateIndex: After setting, element value:", el.val());
+                        } else if (indexes.length > 0) {
+                            // Auto-select first available index if no prevIndex provided
+                            const firstIndex = indexes[0];
+                            console.log("populateIndex: No prevIndex, auto-selecting first index:", firstIndex);
+                            el.val(firstIndex);
+                            console.log("populateIndex: After auto-selecting, element value:", el.val());
+                        } else {
+                            console.log("populateIndex: No prevIndex and no available indexes, element value:", el.val());
+                        }
+                    }
+                } else {
+                    el.replaceWith(`<input data-id="${id}" type="number" class="node-input-index" placeholder="Member" value="${prevIndex}" min="1" max="16">`);
+                    el = elements.indexElement = $(`.node-input-index[data-id="${id}"]`);
+                }
+
+                // Reattach the event listener to the new element
+                el.on("change", function () {
+                    populateChannelType(elements, {});
+                    validateChannelType(elements);
+                    populatePayload(elements);
+                    validatePayload(elements);
+                    updateCoefficient(elements);
+                    validateCoefficient(elements);
+                    updateTopic(elements);
+                    validateTopic(elements);
+                    const container = el.closest(".red-ui-editableList-item-content");
+                    if (container.length) {
+                        refreshPlusButtonFor(container);
+                    }
+                });
+
+                el.on("input", function () {
+                    validateIndex(elements);
+                    const container = el.closest(".red-ui-editableList-item-content");
+                    if (container.length) {
+                        refreshPlusButtonFor(container);
+                    }
+                });
+            }
+
+            // Auto-determine channel type based on the selected key and index (read-only)
+            function populateChannelType(elements, row = {}) {
+                const manual = elements.manualElement?.is(":checked");
+                const el = elements.channelTypeElement;
+
+                const allOptions = [
+                    { value: "", text: "Channel type..." },
+                    { value: "ai", text: "Analogue input (AI)" },
+                    { value: "ao", text: "Analogue output (AO)" },
+                    { value: "di", text: "Discrete input (DI)" },
+                    { value: "do", text: "Discrete output (DO)" }
+                ];
+
+                if (manual) {
+                    const current = el.val() || row.channelType || "";
+                    el.empty();
+                    allOptions.forEach((option) => {
+                        const selected = current === option.value ? "selected" : "";
+                        el.append(`<option value="${option.value}" ${selected}>${option.text}</option>`);
+                    });
+                    el.prop("disabled", false);
+                    return;
+                }
+
+                const channels = _controller.channels || {};
+                const keyNameSelect = elements.keySelectElement.val();
+
+                // Get index from element first, then from row data as fallback (like populateIndex pattern)
+                let index = parseInt(elements.indexElement.val());
+                if (isNaN(index) && row.index) {
+                    index = parseInt(row.index);
+                }
+
+                console.log("populateChannelType: index from element:", elements.indexElement.val(), "from row:", row.index, "final:", index, "keyNameSelect:", keyNameSelect);
+
+                // Auto-determine channel type using helper function
+                let determinedType = "";
+                if (!isNaN(index) && keyNameSelect) {
+                    determinedType = determineChannelType(keyNameSelect, index);
+                    console.log("populateChannelType: Auto-determined channel type:", determinedType, "for", keyNameSelect, index);
+                } else {
+                    console.log("populateChannelType: Cannot determine - isNaN(index):", isNaN(index), "keyNameSelect:", keyNameSelect);
+                }
+
+                clearDropdown(el, { text: "Auto-determined...", disabled: true, selected: false });
+
+                // Add all options, but select the determined type
+                allOptions.slice(1).forEach((option) => {
+                    const selected = determinedType === option.value ? "selected" : "";
+                    el.append(`<option value="${option.value}" ${selected}>${option.text}</option>`);
+                });
+
+                // Set the value and keep it disabled (read-only)
+                if (determinedType) {
+                    el.val(determinedType);
+                }
+                el.prop("disabled", true);
+
+                console.log("populateChannelType: Built dropdown, determinedType:", determinedType);
+            }
+
+            // Update channel type element with row data (like updateIndex)
+            function updateChannelType(elements, row = {}) {
+                const prev = row.channelType || "";
+                console.log("updateChannelType CALLED: prev =", prev, "row.channelType =", row.channelType);
+                const manual = elements.manualElement?.is(":checked");
+
+                if (elements.channelTypeElement.length > 0 && prev) {
+                    console.log("updateChannelType: Attempting to set value:", prev);
+                    // Ensure the element is adjustable before setting value
+                    elements.channelTypeElement.prop("disabled", manual ? false : true);
+                    elements.channelTypeElement.val(prev);
+                    const actualValue = elements.channelTypeElement.val();
+                    console.log("updateChannelType: Value set. Expected:", prev, "Actual:", actualValue, "Match:", prev == actualValue);
+
+                    // If value didn't set, try to trigger change event
+                    if (actualValue !== prev) {
+                        console.log("updateChannelType: Value mismatch, triggering change event");
+                        elements.channelTypeElement.trigger("change");
+                        const actualValue2 = elements.channelTypeElement.val();
+                        console.log("updateChannelType: After change event, value:", actualValue2);
+                    }
+                } else {
+                    console.log("updateChannelType: SKIPPED - element not found or prev empty. element.length:", elements.channelTypeElement.length, "prev:", prev);
+                }
+            }
+
+            // Toggle the payload input based on channel type
+            // Discrete data streams only accept 0 or 1 as payload
+            // Analogue data streams accept any float value
+            function populatePayload(elements) {
+                const payloadType = $("#node-input-payloadType").val();
+                const channelType = elements.channelTypeElement.val() ?? "";
+
+                let el = elements.payloadElement;
+                const prevPayload = el.val();
+
+                const id = Math.random().toString(36).substr(2, 9);
+
+                if (channelType.startsWith("d") && payloadType !== "dynamic") {
+                    el.replaceWith(
+                        `<select data-id="${id}" class="node-input-payload">
+                            <option value="0" ${prevPayload == 0 ? "selected" : ""}>0</option>
+                            <option value="1" ${prevPayload == 1 ? "selected" : ""}>1</option>
+                        </select>`
+                    );
+                } else {
+                    el.replaceWith(`<input data-id="${id}" type="number" class="node-input-payload" placeholder="Payload" value="${prevPayload}" step="0.01">`);
+                }
+
+                el = elements.payloadElement = $(`.node-input-payload[data-id="${id}"]`); // Update the reference using the custom attribute
+
+                // Reattach the event listener to the new element
+                el.on("input", function () {
+                    validatePayload(elements);
+                });
+
+                if (payloadType === "dynamic") {
+                    el.val("");
+                    el.prop("disabled", true);
+                }
+            }
+
+            // Clear the data stream selection
+            function clearDropdown(element, options = {}) {
+                const { text = "none", disabled = false, selected = false } = options;
+
+                element.empty();
+                element.append($(`<option value="" ${disabled ? "disabled" : ""} ${selected ? "selected" : ""}>${text}</option>`));
+            }
+
+            // Update the topic element based on the selected key and member
+            function updateTopic(elements) {
+                const manual = elements.manualElement.is(":checked");
+                const keyNameManual = elements.keyManualElement.val();
+                const keyNameSelect = elements.keySelectElement.val();
+                const keyName = manual ? keyNameManual : keyNameSelect;
+                const index = elements.indexElement.val();
+                const topic = elements.topicElement.val();
+
+                if (!keyName || !index) return;
+
+                // Default topic format: "key.member"
+                if (topic === "" || (!manual && topicRelatedToService(topic))) {
+                    elements.topicElement.val(`${keyName}.${index}`);
+                }
+            }
+
+            // Update tip text based on current settings
+            function updateTipText() {
+                const rows = getListElements();
+
+                const payloadType = $("#node-input-payloadType").val();
+                const topics = rows.map((row) => row.topicElement.val());
+
+                const topic1 = topics && topics.length > 0 ? topics[0] : "topic1";
+                const topic2 = topics && topics.length > 1 ? topics[1] : "topic2";
+
+                const tipText1 = `Routing ${rows.length} values from controller (${_controller.uniqueId || "???"})'s data streams.`;
+                const tipText2 = `The payload will be multiplied by the coefficient (if applicable).`;
+                const tipText3 =
+                    payloadType === "dynamic"
+                        ? `The required payload(s) will be searched from the incoming 'msg' object.`
+                        : `The payload(s) defined in the incoming messages will be used when writing data.`;
+                const tipText4 = `Only writable data streams and members are shown in the dropdown lists.`;
+                const tipText5 =
+                    payloadType === "dynamic"
+                        ? `Incoming message formats:
+                1. {"topic": topic, "payload": value} to write a single stream
+                2. {"${topic1}": value, "${topic2}": value, ...} to write multiple streams`
+                        : `Incoming message formats:
+                1. {"topic": topic} to write a single stream
+                2. {"${topic1}": true, "${topic2}": false, ...} to write multiple streams
+                3. none, in which case every stream will be written.`;
+
+                $("#node-input-tip-text-1").text(tipText1);
+                $("#node-input-tip-text-2").text(tipText2);
+                $("#node-input-tip-text-3").text(tipText3);
+                $("#node-input-tip-text-4").text(tipText4);
+                $("#node-input-tip-text-5").text(tipText5);
+            }
+
+            // Custom validation functions below
+            function validateKeyName(elements) {
+                console.debug("Validating key name...");
+
+                const manual = elements.manualElement.is(":checked");
+                const keyNameSelect = elements.keySelectElement.val();
+                const keyNameManual = elements.keyManualElement.val();
+                const invalidValues = ["", undefined, null];
+
+                let valid;
+                if (manual) {
+                    valid = !invalidValues.includes(keyNameManual);
+                    elements.keyManualElement.css("border-color", valid ? "" : "red");
+                    elements.keySelectElement.css("border-color", "");
+                } else {
+                    valid = !invalidValues.includes(keyNameSelect);
+                    elements.keySelectElement.css("border-color", valid ? "" : "red");
+                    elements.keyManualElement.css("border-color", "");
+                }
+            }
+
+            function validateIndex(elements) {
+                const index = elements.indexElement.val();
+
+                let valid;
+                valid = isValidIndex(index);
+
+                elements.indexElement.css("border-color", valid ? "" : "red");
+            }
+
+            function validateCoefficient(elements) {
+                const coefficient = elements.coefficientElement.val();
+                const channelType = elements.channelTypeElement.val() ?? "";
+
+                let valid;
+                valid = channelType.startsWith("d") || isValidFloat(coefficient);
+
+                elements.coefficientElement.css("border-color", valid ? "" : "red");
+            }
+
+            function validateChannelType(elements) {
+                const channelType = elements.channelTypeElement.val();
+
+                let valid;
+                valid = isValidChannelType(channelType);
+
+                elements.channelTypeElement.css("border-color", valid ? "" : "red");
+            }
+
+            function validatePayload(elements) {
+                const payloadType = $("#node-input-payloadType").val();
+                const channelType = elements.channelTypeElement.val() ?? "";
+                const payload = elements.payloadElement.val();
+
+                let valid;
+
+                if (channelType.startsWith("d")) {
+                    valid = ["0", "1"].includes(payload);
+                } else {
+                    valid = isValidFloat(payload);
+                }
+
+                if (payloadType === "dynamic") {
+                    valid = true;
+                }
+
+                elements.payloadElement.css("border-color", valid ? "" : "red");
+            }
+
+            function validateTopic(elements) {
+                const topic = elements.topicElement.val();
+
+                const invalidValues = ["", undefined, null];
+                let duplicateTopics = [];
+
+                const rows = getListElements();
+
+                for (const elements of rows) {
+                    const t = elements.topicElement.val();
+                    if (t === topic) duplicateTopics.push(t);
+                }
+
+                let valid;
+                valid = !invalidValues.includes(topic) && duplicateTopics.length <= 1;
+
+                elements.topicElement.css("border-color", valid ? "" : "red");
+            }
+
+            function isValidIndex(index) {
+                const indexInt = parseInt(index);
+                return Number.isInteger(indexInt) && indexInt >= 1 && indexInt <= 16;
+            }
+
+            function isValidFloat(value) {
+                return !isNaN(parseFloat(value));
+            }
+
+            function isValidChannelType(type) {
+                return ["ai", "ao", "di", "do"].includes(type);
+            }
+
+            // Data stream helper functions below
+
+            // Sort alphabetically, all keys starting with "_" are to be in the end
+            function sortKeysByServiceNames(obj) {
+                const keyNames = Object.keys(obj);
+                const normalKeys = keyNames.filter((key) => !obj[key]?.servicename.startsWith("_"));
+                const underscoreKeys = keyNames.filter((key) => obj[key]?.servicename.startsWith("_"));
+
+                // Sort both arrays in ascending alphabetical order based on servicename
+                normalKeys.sort((a, b) => obj[a]?.servicename?.localeCompare(obj[b]?.servicename));
+                underscoreKeys.sort((a, b) => obj[a]?.servicename?.localeCompare(obj[b]?.servicename));
+
+                return normalKeys.concat(underscoreKeys);
+            }
+
+            function findValueBySvcNameAndMember(channels = {}, name, member, key) {
+                return channels?.[name]?.[member]?.[key] ?? null;
+            }
+
+            // Auto-generate mappings for all available services
+            // TODO: revert back to prev version? Unnecessary complexity here, already implemented elsewhere: writableServices
+            function autoGenerateMappings() {
+                const channels = _controller.channels || {};
+                const filteredServices = _controller.filteredServices || {}; // Still used for metadata (conv_coef, servicename)
+                const newMappings = [];
+
+                // Apply our own writability filtering to channels (unfiltered list from backend)
+                // Rules: s/s!/r always writable; h/c/h!/c! writable if _output is true
+                const writableDatastreams = {};
+                Object.keys(channels).forEach((key) => {
+                    const keyChannels = channels[key] || {};
+                    const members = Object.values(keyChannels);
+
+                    // Check if this datastream has at least one writable member
+                    const hasWritableMember = members.some((member) => {
+                        const regtype = member.regtype;
+                        const hasOutput = member._output === true;
+
+                        if (["s", "s!", "r"].includes(regtype)) {
+                            return true;
+                        }
+                        if (["h", "c", "h!", "c!"].includes(regtype)) {
+                            return hasOutput;
+                        }
+                        return false;
+                    });
+
+                    if (hasWritableMember) {
+                        writableDatastreams[key] = filteredServices[key] || { servicename: key }; // Use metadata if available
+                    }
+                });
+
+                const keyNames = sortKeysByServiceNames(writableDatastreams);
+
+                // Clear existing mappings first
+                $("#mappings-container").editableList("empty");
+
+                // Create a mapping for each key and its members
+                keyNames.forEach((keyName) => {
+                    const service = writableDatastreams[keyName] || filteredServices[keyName];
+                    if (!channels[keyName]) return;
+
+                    // Get all members for this service key
+                    const members = _controller?.channels?.[keyName] || {};
+
+                    // Add an entry for each member (apply writability rules)
+                    Object.values(members).forEach((member) => {
+                        const idx = member.member;
+                        const regtype = member.regtype;
+                        const memberIdx = parseInt(idx, 10);
+                        const hasOutput = member._output === true;
+
+                        // Apply writability rules: "s"/"s!"/"r" always writable, "h"/"c"/"h!"/"c!" if _output is true
+                        let isWritable = false;
+                        if (["s", "s!", "r"].includes(regtype)) {
+                            isWritable = true;
+                        } else if (["h", "c", "h!", "c!"].includes(regtype)) {
+                            isWritable = hasOutput;
+                        }
+
+                        if (!isWritable) return; // Skip if not writable
+
+                        // Auto-determine channel type
+                        const channelType = determineChannelType(keyName, memberIdx);
+
+                        newMappings.push({
+                            manual: false,
+                            gateLoop: false,
+                            keyNameSelect: keyName,
+                            channelType: channelType,
+                            index: idx,
+                            coefficient: service?.conv_coef || filteredServices[keyName]?.conv_coef || 1,
+                            payload: "",
+                            topic: `${keyName}.${idx}`
+                        });
+                    });
+                });
+
+                // Add all mappings to the list
+                $("#mappings-container").editableList("addItems", newMappings);
+
+                // Update ports and tip text
+                updateTipText();
+
+                RED.notify("Generated " + newMappings.length + " data stream mappings", { type: "success", timeout: 3000 });
+            }
+
+            // Iterate over each mapping row and store the elements
+            function getListElements() {
+                const result = [];
+
+                $("#mappings-container")
+                    .editableList("items")
+                    .each(function () {
+                        const container = $(this);
+                        const elements = getRowElements(container);
+
+                        result.push(elements);
+                    });
+
+                return result;
+            }
+        },
+        oneditsave: function () {
+            const node = this;
+            console.log("[write-data-streams] oneditsave called for node:", node.id);
+
+            // Show notification on save if loops detected
+            const loopConflictKeys = node._loopConflictKeys || new Set();
+            if (loopConflictKeys && loopConflictKeys.size > 0) {
+                RED.notify(
+                    `⚠️ Potential feedback loops (by topic): ${Array.from(loopConflictKeys).join(", ")}. If nodes are connected, enable "Gate loop" checkbox.`,
+                    "warning",
+                    false,
+                    10000
+                );
+            }
+
+            node.name = $("#node-input-name").val();
+            node.controller = $("#node-input-controller").val();
+            node.outputMode = $("#node-input-outputMode").val();
+            node.payloadType = $("#node-input-payloadType").val();
+            node.gatingMs = parseInt($("#node-input-gatingMs").val()) || 1500;
+            node.mappings = getMappings();
+
+            console.log("[write-data-streams] Saved mappings count:", node.mappings.length);
+            console.log("[write-data-streams] Mappings:", JSON.stringify(node.mappings, null, 2));
+
+            // Iterate over each mapping row and store the values
+            function getMappings() {
+                const mappings = [];
+
+                $("#mappings-container")
+                    .editableList("items")
+                    .each(function () {
+                        const container = $(this);
+
+                        const manual = container.find(".node-input-manual").is(":checked");
+                        const gateLoop = container.find(".node-input-gateLoop").is(":checked");
+                        const keyNameSelect = container.find(".node-input-keyNameSelect").val();
+                        const keyNameManual = container.find(".node-input-keyNameManual").val();
+                        const channelType = container.find(".node-input-channelType").val();
+                        const index = parseInt(container.find(".node-input-index").val());
+                        const coefficient = parseFloat(container.find(".node-input-coefficient").val());
+                        const payload = parseFloat(container.find(".node-input-payload").val());
+                        const topic = container.find(".node-input-topic").val();
+
+                        mappings.push({ manual, gateLoop, keyNameSelect, keyNameManual, channelType, index, coefficient, payload, topic });
+                    });
+
+                return mappings;
+            }
+        }
+    });
+</script>
+
+<!-- Define style for the form fields -->
+<style type="text/css">
+    .write-data-streams-div .form-row {
+        margin-bottom: 10px;
+    }
+
+    .write-data-streams-div .form-row label {
+        width: 33% !important;
+        vertical-align: middle;
+    }
+
+    .write-data-streams-div .form-row div,
+    .write-data-streams-div .form-row input,
+    .write-data-streams-div .form-row select {
+        max-width: 66% !important;
+    }
+
+    .write-data-streams-div .form-row select {
+        width: 66% !important;
+    }
+
+    .write-data-streams-div .form-tips {
+        max-width: 100% !important;
+        text-align: center;
+    }
+
+    /* Override width constraints for loop warning banner */
+    .write-data-streams-div .loop-warning-banner {
+        width: 100% !important;
+        max-width: 100% !important;
+    }
+
+    .write-data-streams-div .loop-warning-banner > div {
+        max-width: 100% !important;
+        width: 100% !important;
+    }
+
+    .write-data-streams-list {
+        overflow: hidden;
+        white-space: nowrap;
+        display: flex;
+        align-items: center;
+    }
+
+    .write-data-streams-list .checkbox-container {
+        text-align: center;
+        min-width: 35px;
+        width: 7%;
+    }
+
+    /* Highlight gate loop checkbox when enabled (loop detected) */
+    .write-data-streams-list .node-input-gateLoop:not(:disabled) {
+        accent-color: #ff9800;
+        transform: scale(1.2);
+    }
+
+    .write-data-streams-list .node-input-gateLoop:not(:disabled) + .helper-text {
+        color: #ff9800;
+        font-weight: bold;
+    }
+
+    .write-data-streams-list .helper-text {
+        font-size: 10px;
+        line-height: 12px;
+        text-wrap: wrap;
+        color: #666;
+    }
+
+    .write-data-streams-list .node-input-manual {
+        min-width: 16px;
+        min-height: 16px;
+    }
+
+    .write-data-streams-list .node-input-keyNameManual {
+        font-size: 12px !important;
+        min-width: 150px;
+        width: 32%;
+    }
+
+    .write-data-streams-list .node-input-keyNameSelect {
+        font-size: 12px;
+        min-width: 170px;
+        width: 32%;
+    }
+
+    .write-data-streams-list .node-input-channelType {
+        font-size: 12px;
+        min-width: 100px;
+        width: 12%;
+    }
+
+    .write-data-streams-list .node-input-index {
+        font-size: 12px !important;
+        min-width: 150px;
+        width: 20%;
+    }
+
+    .write-data-streams-list .node-input-coefficient {
+        font-size: 12px !important;
+        min-width: 65px;
+        width: 7%;
+    }
+
+    .write-data-streams-list .node-input-arrow {
+        font-size: 18px;
+        margin-left: 5px;
+        margin-right: 5px;
+    }
+
+    .write-data-streams-list .node-input-topic {
+        font-size: 12px !important;
+        min-width: 100px;
+        width: 15%;
+    }
+
+    .write-data-streams-list .node-input-payload {
+        font-size: 12px !important;
+        min-width: 75px;
+        width: 10%;
+    }
+
+    .write-data-streams-div .row-actions {
+        display: inline-flex !important;
+        align-items: center !important;
+        gap: 4px !important;
+        margin-left: 4px !important;
+        width: 40px !important;
+        justify-content: flex-start !important;
+    }
+
+    /* Style for header sort triangles */
+    .write-data-streams-div .sort-triangle {
+        font-size: 10px;
+        color: #999;
+        transition: color 0.2s ease;
+    }
+
+    .write-data-streams-div .sort-triangle.active {
+        color: #ff0000;
+        font-weight: bold;
+    }
+
+    .write-data-streams-list .sort-triangle:hover {
+        color: #666;
+    }
+
+    /* Autocomplete widget styling */
+    .ui-autocomplete {
+        max-height: 250px;
+        overflow-y: auto;
+        overflow-x: hidden;
+        z-index: 2000;
+        background: #fff;
+        border: 1px solid #ccc;
+        border-radius: 3px;
+        box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+    }
+
+    .ui-menu-item {
+        font-size: 12px;
+        padding: 5px;
+        cursor: pointer;
+        position: relative;
+    }
+
+    .ui-menu-item:hover {
+        background-color: #f5f5f5;
+    }
+
+    /* Style the add member button and dropdown */
+    .write-data-streams-div .add-member-dropdown {
+        background: #4caf50 !important;
+        border: none !important;
+        color: white !important;
+        padding: 0px 1px !important;
+        border-radius: 2px !important;
+        cursor: pointer !important;
+        font-size: 12px !important;
+        font-weight: bold !important;
+        margin-right: 4px !important;
+        width: 24px !important;
+        min-width: 4px !important;
+        text-align: center !important;
+        height: 20px !important;
+        line-height: 20px !important;
+        -webkit-appearance: none !important;
+        -moz-appearance: none !important;
+        appearance: none !important;
+    }
+
+    .write-data-streams-div .add-member-dropdown option {
+        background-color: white !important;
+        color: black !important;
+    }
+
+    .write-data-streams-div .add-member-dropdown:hover {
+        background: #45a049 !important;
+    }
+
+    /* Editable list style */
+    .write-data-streams-div .red-ui-editableList-header {
+        background-color: #80808014;
+        font-weight: bold;
+        display: flex;
+    }
+
+    .write-data-streams-div .red-ui-editableList-container {
+        min-height: 50px;
+    }
+
+    .write-data-streams-div .red-ui-editableList > .red-ui-editableList-container + .red-ui-editableList-footer {
+        display: block;
+    }
+
+    .write-data-streams-div .red-ui-editableList {
+        margin-bottom: 10px;
+        min-width: 700px;
+    }
+
+    /* Style row remove button: red with white X */
+    .write-data-streams-div .red-ui-editableList-item-remove {
+        background: #d32f2f !important;
+        color: white !important;
+    }
+
+    .write-data-streams-div .red-ui-editableList-item-remove:hover {
+        background: #b71c1c !important;
+    }
+
+    .write-data-streams-div .red-ui-editableList-item-remove i {
+        color: white !important;
+    }
+
+    /* Style buttons below the table */
+    .write-data-streams-div .red-ui-editableList-addButton {
+        height: 30px !important;
+        line-height: 20px !important;
+        font-size: 12px !important;
+        border-radius: 5px !important;
+        padding: 0 10px !important;
+    }
+</style>
+
+<!-- Form fields for the node -->
+<script type="text/html" data-template-name="fusebox-write-data-streams">
+    <div class="write-data-streams-div">
+        <div class="form-row">
+            <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+            <input type="text" id="node-input-name" placeholder="Name" />
+        </div>
+        <div class="form-row">
+            <label for="node-input-controller"><i class="fa fa-search"></i> Controller</label>
+            <select id="node-input-controller">
+                <option value="" disabled selected>Select controller...</option>
+            </select>
+        </div>
+        <div class="form-row">
+            <label for="node-input-outputMode"><i class="fa fa-sign-out"></i> Write mode</label>
+            <select id="node-input-outputMode">
+                <option value="" disabled selected>Select write mode...</option>
+                <option value="all">Write data every time</option>
+                <option value="change">Write data on change</option>
+            </select>
+        </div>
+        <div class="form-row">
+            <label for="node-input-payloadType"><i class="fa fa-sign-out"></i> Payload type</label>
+            <select id="node-input-payloadType">
+                <option value="" disabled>Select payload type...</option>
+                <option value="static">Use form values</option>
+                <option value="dynamic" selected>Use incoming 'msg' payload</option>
+            </select>
+        </div>
+        <div class="form-row">
+            <label for="node-input-gatingMs"><i class="fa fa-clock-o"></i> Loop gate duration (ms)</label>
+            <input type="number" id="node-input-gatingMs" disabled placeholder="1500" min="100" max="5000" step="100" style="width:100px" />
+            <span style="margin-left:10px;color:#666;font-size:90%">Prevents feedback loops by ignoring reads for this duration after write</span>
+        </div>
+
+        <ol id="mappings-container"></ol>
+
+        <div class="form-tips" id="node-input-tip-text-1"></div>
+        <div class="form-tips" id="node-input-tip-text-2"></div>
+        <div class="form-tips" id="node-input-tip-text-3"></div>
+        <div class="form-tips" id="node-input-tip-text-4"></div>
+        <div class="form-tips" id="node-input-tip-text-5" style="white-space: pre-line;"></div>
+
+        <br />
+    </div>
+</script>
+
+<!-- Define node description -->
+<script type="text/html" data-help-name="fusebox-write-data-streams">
+    <p>Write (save) the formatted values of one or more data streams back to the devices. Widely customizable node that can format data in various formats.</p>
+    <p>Often used at the end of some flow to route a value back to the data stream.</p>
+
+    <h3>Parameters</h3>
+    <dl class="message-properties">
+        <dt class="optional">name <span class="property-type">string</span></dt>
+        <dd>User-friendly name for the node</dd>
+
+        <dt>controller <span class="property-type">controller</span></dt>
+        <dd>The source of the data streams on the local network. Localhost (127.0.0.1) for most cases.</dd>
+
+        <dt>write mode <span class="property-type">string</span></dt>
+        <dd>Specifies the conditions when data will be saved. Selecting <code>change</code> will write data only when the data stream differs from the previous value.</dd>
+
+        <dt>payload type <span class="property-type">string</span></dt>
+        <dd>Specifies the source of payload values, either from the mapping fields or from the incoming <code>msg</code> object.</dd>
+
+        <dt>mappings <span class="property-type">object</span></dt>
+        <dd>
+            Each row specifies a data stream member, channel type (analogue or discrete), and a topic to use when writing the message. Manual data stream entries are also allowed.
+        </dd>
+    </dl>
+
+    <h3>Output</h3>
+    <dl class="message-properties">
+        <dt>controller <span class="property-type">object</span></dt>
+        <dd>Each output <code>msg</code> includes info about the source of the data, e.g. <code>uniqueId</code>, <code>host</code>, <code>protocol</code>.</dd>
+
+        <dt>result <span class="property-type">boolean</span></dt>
+        <dd><code>true</code> if the data was successfully written to the device, <code>false</code> otherwise.</dd>
+
+        <dt>parameters <span class="property-type">object</span></dt>
+        <dd>Contains info about the data stream which was written to the device, e.g. <code>data stream name</code>, <code>channel type</code>, <code>final payload</code>.</dd>
+    </dl>
+
+    <h3>Additional details</h3>
+    <p>This node gets its data from the controller configuration and the global context.</p>
+    <p>In order to preserve the unit of the defined data stream, the payload is multiplied by the coefficient (if applicable).</p>
+
+    <p>The exact payload format depends on the message type. Example incoming messages:</p>
+    <p>
+        In case of <code>separate</code> message types: <code style="white-space: normal;">{"topic": string, "payload": float}</code>.
+        <br />
+        In case of <code>comprehensive</code> message type: <code style="white-space: normal;">{"topic1": float, "topic2": float, ...}</code>.
+    </p>
+
+    <p>Any other incoming <code>msg</code> properties will be preserved.</p>
+</script>

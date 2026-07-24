@@ -1,7 +1,7 @@
 {
     "name": "@janart19/node-red-fusebox",
-    "version": "0.1.6",
-    "description": "A collection of Fusebox-specific custom nodes for Node-RED",
+    "version": "0.2.0",
+    "description": "A comprehensive collection of custom nodes for interfacing with Fusebox automation controllers - data streams, energy management, and utilities",
     "author": "Janar Takis <janar@fusebox.energy>",
     "license": "MIT",
     "keywords": [
@@ -13,6 +13,8 @@
         "virtual power plant",
         "automation",
         "data stream",
+        "heating",
+        "home automation",
         "iot"
     ],
     "engines": {
@@ -24,21 +26,24 @@
     "node-red": {
         "version": ">=4.0.0",
         "nodes": {
-            "fusebox-controller": "nodes/flow/config/controller/controller.js",
-            "fusebox-query-data-streams": "nodes/flow/data-streams/query/query-data-streams.js",
-            "fusebox-query-external-connections": "nodes/flow/data-streams/query/query-external-connections.js",
-            "fusebox-read-static-data-streams": "nodes/flow/data-streams/read/read-static-data-streams.js",
-            "fusebox-read-dynamic-data-stream": "nodes/flow/data-streams/read/read-dynamic-data-stream.js",
-            "fusebox-write-static-data-streams": "nodes/flow/data-streams/write/write-static-data-streams.js",
-            "fusebox-write-dynamic-data-stream": "nodes/flow/data-streams/write/write-dynamic-data-stream.js",
-            "fusebox-boolean-logic": "nodes/flow/other/boolean/boolean-logic.js",
-            "fusebox-security": "nodes/flow/other/security/security.js",
-            "fusebox-sql-calendar": "nodes/flow/other/calendar/sql-calendar.js",
-            "fusebox-weather-data": "nodes/flow/other/weather/weather.js",
-            "fusebox-lamp-control": "nodes/flow/other/lamp/lamp-control.js",
-            "fusebox-pid-controller": "nodes/subflows/pid-controller/flow.js",
-            "fusebox-inverter-control": "nodes/subflows/inverter-control/flow.js",
-            "fusebox-inverter-control-dual-limits": "nodes/subflows/inverter-control-dual-limits/flow.js"
+            "fusebox-controller": "nodes/flow/core/config/controller/controller.js",
+            "fusebox-query-data-streams": "nodes/flow/core/data-streams/query/query-data-streams.js",
+            "fusebox-query-external-connections": "nodes/flow/core/data-streams/query/query-external-connections.js",
+            "fusebox-read-data-streams": "nodes/flow/core/data-streams/read/read-data-streams.js",
+            "fusebox-write-data-streams": "nodes/flow/core/data-streams/write/write-data-streams.js",
+            "fusebox-sql-calendar": "nodes/flow/core/calendar/sql-calendar.js",
+            "fusebox-security": "nodes/flow/core/security/security.js",
+            "fusebox-inverter-control": "nodes/flow/automation/inverter/inverter-control.js",
+            "fusebox-inverter-control-dual-limits": "nodes/flow/automation/inverter/inverter-control-dual-limits.js",
+            "fusebox-averager": "nodes/flow/utils-tools/averager/averager.js",
+            "fusebox-boolean-logic": "nodes/flow/utils-tools/boolean/boolean-logic.js",
+            "fusebox-flow-analyzer": "nodes/flow/utils-tools/flow-analyzer/flow-analyzer.js",
+            "fusebox-flow-validator": "nodes/flow/utils-tools/flow-validator/flow-validator.js",
+            "fusebox-measure-delay": "nodes/flow/utils-tools/measure-delay/measure-delay.js",
+            "fusebox-pid-controller": "nodes/flow/utils-tools/pid/pid-controller.js",
+            "fusebox-clock-ticker": "nodes/flow/utils-tools/pwm/clock-ticker.js",
+            "fusebox-manual-ticker": "nodes/flow/utils-tools/pwm/manual-ticker.js",
+            "fusebox-triple-status": "nodes/flow/utils-tools/triple-status/triple-status.js"
         }
     }
 }

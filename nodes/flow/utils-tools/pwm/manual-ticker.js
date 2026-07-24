@@ -1,0 +1,65 @@
+// manual-ticker.js
+// Node-RED node: manual-ticker
+// Purpose: Manually send a global tick message with current timestamp and configurable period
+
+module.exports = function (RED) {
+    // Register HTTP endpoint for button click
+    if (RED.httpAdmin) {
+        RED.httpAdmin.post("/fusebox/manual-ticker/:id/inject", function (req, res) {
+            const nodeId = req.params.id;
+            const node = RED.nodes.getNode(nodeId);
+            if (node && node.type === "fusebox-manual-ticker") {
+                try {
+                    node.sendTick();
+                    res.json({ success: true });
+                } catch (err) {
+                    res.status(500).json({ error: err.message || String(err) });
+                }
+            } else {
+                res.status(404).json({ error: "Node not found" });
+            }
+        });
+    }
+
+    function ManualTickNode(config) {
+        RED.nodes.createNode(this, config);
+        const node = this;
+
+        // ---- CONFIG
+        node.name = config.name || "";
+        node.topic = config.topic || "heating/tick"; // Output topic
+        node.periodSec = Number(config.periodSec ?? 1200); // Period in seconds
+
+        function formatDate() {
+            return new Date().toLocaleString("en-GB", { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+        }
+
+        function setStatus(text, fill) {
+            node.status({ fill: fill || "blue", shape: "dot", text });
+        }
+
+        // Send tick message
+        function sendTick() {
+            const ts = Math.floor(Date.now() / 1000); // Current Unix timestamp in seconds
+            const payload = {
+                ts: ts,
+                periodSec: node.periodSec
+            };
+
+            node.send({ topic: node.topic, payload });
+            setStatus(`Tick sent at ${formatDate()}`, "green");
+        }
+
+        // Initial status
+        setStatus(`Ready - topic: ${node.topic}, period: ${node.periodSec}s`, "grey");
+
+        // Expose sendTick for RPC calls (button click)
+        node.sendTick = sendTick;
+
+        node.on("close", () => {
+            node.status({});
+        });
+    }
+
+    RED.nodes.registerType("fusebox-manual-ticker", ManualTickNode);
+};
