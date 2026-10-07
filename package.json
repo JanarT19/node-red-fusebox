@@ -1,6 +1,6 @@
 {
     "name": "@janart19/node-red-fusebox",
-    "version": "0.3.0",
+    "version": "1.0.0",
     "description": "A comprehensive collection of custom nodes for interfacing with Fusebox automation controllers - data streams, energy management, and utilities",
     "author": "Janar Takis <janar@fusebox.energy>",
     "license": "MIT",
@@ -21,8 +21,8 @@
         "node": ">=16"
     },
     "dependencies": {
-        "node-fetch": "^3.3.2",
-        "js-yaml": "^4.1.0"
+        "js-yaml": "^4.1.0",
+        "chart.js": "^4.5.1"
     },
     "node-red": {
         "version": ">=4.0.0",
